@@ -49,11 +49,12 @@ jobs:
           TARGET_TYPE=$(jq -r .target_type config.json)
           NAME=$(jq -r .name config.json)
           if [ "$TARGET_TYPE" = "worker" ]; then
-            CLOUDFLARE_API_TOKEN=$CF npx wrangler deploy --account-id "$TARGET_ACCOUNT" 2>&1 | tee -a /tmp/deploy.log
+            CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler deploy 2>&1 | tee -a /tmp/deploy.log
           else
             OUT=$(jq -r '.output_dir // "dist"' config.json)
             [ -d "$OUT" ] || OUT="."
-            CLOUDFLARE_API_TOKEN=$CF npx wrangler pages deploy "$OUT" --project-name "$NAME" --branch main --account-id "$TARGET_ACCOUNT" 2>&1 | tee -a /tmp/deploy.log
+            # wrangler v4 已移除 --account-id 参数，改用 CLOUDFLARE_ACCOUNT_ID 环境变量
+            CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler pages deploy "$OUT" --project-name "$NAME" --branch main 2>&1 | tee -a /tmp/deploy.log
           fi
       - name: Report status (回写构建结果 + 日志尾巴给 Hub)
         if: always()
