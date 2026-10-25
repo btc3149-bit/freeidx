@@ -13,9 +13,9 @@ jobs:
       - name: Fetch Hub config (一次性 ticket 换取，token 不落任何日志)
         run: |
           TICKET=$(curl -fsS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/projects/${PROJECT_ID}/config-ticket" | jq -r .ticket)
-          jq -n --arg t "${TICKET}" '{ticket:\$t}' > /tmp/req.json
+          jq -n --arg t "${TICKET}" '{ticket:$t}' > /tmp/req.json
           curl -fsS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" -H "Content-Type: application/json" -d @/tmp/req.json "${HUB_URL}/api/config/exchange" -o config.json
-          echo "config fetched for project \$(jq -r .name config.json) (token redacted)"
+          echo "config fetched for project $(jq -r .name config.json) (token redacted)"
         env:
           HUB_URL: ${{ secrets.HUB_URL }}
           HUB_API_TOKEN: ${{ secrets.HUB_API_TOKEN }}
@@ -49,7 +49,7 @@ jobs:
         run: |
           STATUS="${{ job.status }}"
           LOGS=$(tail -c 4000 /tmp/deploy.log 2>/dev/null)
-          jq -n --arg s "${STATUS}" --arg l "${LOGS}" '{status:\$s,logs:\$l}' > /tmp/req.json
+          jq -n --arg s "${STATUS}" --arg l "${LOGS}" '{status:$s,logs:$l}' > /tmp/req.json
           curl -sS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/deploys/${DEPLOY_ID}/status" -H "Content-Type: application/json" -d @/tmp/req.json || true
         env:
           HUB_URL: ${{ secrets.HUB_URL }}
