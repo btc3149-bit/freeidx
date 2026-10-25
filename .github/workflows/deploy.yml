@@ -23,7 +23,18 @@ jobs:
       - name: Install
         if: ${{ env.INSTALL != 'skip' }}
         run: |
-          if [ -f package.json ]; then npm ci || npm install; fi
+          if [ -f package.json ]; then
+            PM=$(jq -r '.packageManager // ""' package.json)
+            if [ -f pnpm-lock.yaml ] || [[ "$PM" == pnpm@* ]]; then
+              corepack enable && [ -n "$PM" ] && corepack prepare "$PM" --activate || true
+              pnpm install --frozen-lockfile || pnpm install
+            elif [ -f yarn.lock ] || [[ "$PM" == yarn@* ]]; then
+              corepack enable && [ -n "$PM" ] && corepack prepare "$PM" --activate || true
+              yarn install --frozen-lockfile || yarn install
+            else
+              npm ci || npm install
+            fi
+          fi
         env: { INSTALL: 'auto' }
       - name: Build
         run: |
