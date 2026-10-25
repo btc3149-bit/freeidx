@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 22 }
       - name: Fetch Hub config (一次性 ticket 换取，token 不落任何日志)
         run: |
           TICKET=$(curl -fsS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/projects/${PROJECT_ID}/config-ticket" | jq -r .ticket)
@@ -59,7 +59,7 @@ jobs:
         if: always()
         run: |
           STATUS="${{ job.status }}"
-          LOGS=$(tail -c 4000 /tmp/deploy.log 2>/dev/null)
+          LOGS=$(tail -c 4000 /tmp/deploy.log 2>/dev/null || true)
           jq -n --arg s "${STATUS}" --arg l "${LOGS}" '{status:$s,logs:$l}' > /tmp/req.json
           curl -sS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/deploys/${DEPLOY_ID}/status" -H "Content-Type: application/json" -d @/tmp/req.json || true
         env:
