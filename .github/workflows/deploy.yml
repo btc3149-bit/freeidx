@@ -1,0 +1,55 @@
+# .github/workflows/deploy.yml — injected by CF-Deploy Hub
+name: cf-deploy
+on:
+  repository_dispatch:
+    types: [cf-deploy]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Fetch Hub config (一次性 ticket 换取，token 不落任何日志)
+        run: |
+          TICKET=$(curl -fsS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/projects/${PROJECT_ID}/config-ticket" | jq -r .ticket)
+          curl -fsS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" -H "Content-Type: application/json" -d "{"ticket":"${TICKET}"}" "${HUB_URL}/api/config/exchange" -o config.json
+          echo "config fetched for project $(jq -r .name config.json) (token redacted)"
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_API_TOKEN: ${{ secrets.HUB_API_TOKEN }}
+          PROJECT_ID: ${{ github.event.client_payload.project_id || 'local' }}
+      - name: Install
+        if: ${{ env.INSTALL != 'skip' }}
+        run: |
+          if [ -f package.json ]; then npm ci || npm install; fi
+        env: { INSTALL: 'auto' }
+      - name: Build
+        run: |
+          set -o pipefail
+          BUILD_CMD=$(jq -r '.build_command // ""' config.json)
+          if [ -n "$BUILD_CMD" ]; then eval "$BUILD_CMD" 2>&1 | tee -a /tmp/deploy.log; fi
+      - name: Deploy
+        run: |
+          set -o pipefail
+          CF=$(jq -r .api_token config.json)
+          TARGET_ACCOUNT=$(jq -r .target_account_id config.json)
+          TARGET_TYPE=$(jq -r .target_type config.json)
+          NAME=$(jq -r .name config.json)
+          if [ "$TARGET_TYPE" = "worker" ]; then
+            CLOUDFLARE_API_TOKEN=$CF npx wrangler deploy --account-id "$TARGET_ACCOUNT" 2>&1 | tee -a /tmp/deploy.log
+          else
+            OUT=$(jq -r '.output_dir // "dist"' config.json)
+            [ -d "$OUT" ] || OUT="."
+            CLOUDFLARE_API_TOKEN=$CF npx wrangler pages deploy "$OUT" --project-name "$NAME" --branch main --account-id "$TARGET_ACCOUNT" 2>&1 | tee -a /tmp/deploy.log
+          fi
+      - name: Report status (回写构建结果 + 日志尾巴给 Hub)
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          LOGS=$(tail -c 4000 /tmp/deploy.log 2>/dev/null | jq -Rs . 2>/dev/null || echo '""')
+          curl -sS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/deploys/${DEPLOY_ID}/status" -H "Content-Type: application/json" -d "{"status":"${STATUS}","logs":${LOGS}}" || true
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_API_TOKEN: ${{ secrets.HUB_API_TOKEN }}
+          DEPLOY_ID: ${{ github.event.client_payload.deploy_id }}
