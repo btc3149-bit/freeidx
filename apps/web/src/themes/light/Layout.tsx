@@ -350,7 +350,7 @@ export function Layout({ children }: { children?: ReactNode }) {
   }, [pathname]);
 
   useEffect(() => {
-    document.title = setting?.sitename || '319解说';
+    document.title = setting?.sitename || 'btc3149-bit';
   }, [pathname, setting?.sitename]);
 
   /* 顶栏导航与一级版块均为派生数据：Layout 在每个页面常驻、路由与 store 变化都会重渲染，
@@ -396,11 +396,11 @@ export function Layout({ children }: { children?: ReactNode }) {
       <header className="fixed inset-x-0 top-0 z-[999] w-full bg-card/96 backdrop-blur-[10.5px] max-lg:border-b max-lg:border-zh-line">
         {/* PC 行（lg+） */}
         <div className="mx-auto hidden h-[75px] w-full max-w-[1280px] items-center gap-2 px-4 lg:flex">
-          <Link to="/" className="flex shrink-0 items-center" aria-label={setting?.sitename || '319解说'}>
+          <Link to="/" className="flex shrink-0 items-center" aria-label={setting?.sitename || 'btc3149-bit'}>
             {setting?.logo_url ? (
               <img src={String(setting.logo_url)} alt={setting.sitename} className="h-[42px] w-auto max-w-none" />
             ) : (
-              <span className="text-xl font-bold tracking-tight text-brand">{setting?.sitename || '319解说'}</span>
+              <span className="text-xl font-bold tracking-tight text-brand">{setting?.sitename || 'btc3149-bit'}</span>
             )}
           </Link>
           <nav className="ml-4 flex h-full min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label={t('forum_nav')}>
@@ -536,7 +536,7 @@ export function Layout({ children }: { children?: ReactNode }) {
           <div className="modal-fade absolute inset-0 bg-black/50" onClick={() => setDrawer(false)} aria-hidden="true" />
           <div className="drawer-in absolute left-0 top-0 h-full w-[80%] max-w-[300px] overflow-y-auto bg-background p-4 shadow-[2px_0_20px_rgba(0,0,0,0.2)]">
             <div className="mb-3 flex items-center justify-between">
-              <span className="text-base font-bold tracking-tight text-brand">{setting?.sitename || '319解说'}</span>
+              <span className="text-base font-bold tracking-tight text-brand">{setting?.sitename || 'btc3149-bit'}</span>
               <button
                 type="button"
                 className="-mr-2 flex size-9 items-center justify-center rounded-full text-zh-grey transition-colors hover:bg-accent hover:text-foreground"
@@ -669,7 +669,7 @@ export function Layout({ children }: { children?: ReactNode }) {
                 (setting?.logo_url ? (
                   <img src={String(setting.logo_url)} alt={setting.sitename} className="mb-2 block h-9 w-auto" />
                 ) : (
-                  <span className="mb-2 block text-base font-bold text-brand">{setting?.sitename || '319解说'}</span>
+                  <span className="mb-2 block text-base font-bold text-brand">{setting?.sitename || 'btc3149-bit'}</span>
                 ))}
               <p className="text-sm leading-[26px] text-foreground">{setting?.brief || t('no_brief_yet')}</p>
               {light.footerOneContent && <p className="mt-1 whitespace-pre-line text-sm leading-[26px] text-foreground">{light.footerOneContent}</p>}
@@ -683,7 +683,7 @@ export function Layout({ children }: { children?: ReactNode }) {
                   title={
                     (icon === 'message' ? light.footerContactQq : icon === 'comment' ? light.footerContactWx : light.footerContactEmail) ||
                     setting?.sitename ||
-                    '319解说'
+                    'btc3149-bit'
                   }
                 >
                   <Icon name={icon} className="size-5" />
@@ -725,7 +725,7 @@ export function Layout({ children }: { children?: ReactNode }) {
             ))}
             {light.themeCopyrightSwitch && (
               <li className="text-xs text-lt-grey">
-                © {new Date().getFullYear()} {setting?.sitename || '319解说'} · Powered by 319解说
+                © {new Date().getFullYear()} {setting?.sitename || 'btc3149-bit'} · Powered by btc3149-bit
               </li>
             )}
           </ul>

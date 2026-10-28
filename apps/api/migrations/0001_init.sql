@@ -1,4 +1,4 @@
--- 319解说 0001_init — G1 schema 冻结（铁律 1：全表一次定稿）
+-- btc3149-bit 0001_init — G1 schema 冻结（铁律 1：全表一次定稿）
 -- MySQL→SQLite 转换（§5.1）：unix 秒 INTEGER、去 ENGINE、独立 CREATE INDEX、保留 bbs_ 前缀。
 -- session_data 合并进 session.data（D1 单行 2MB）；核心表 16 张 + email_code
 -- + 会员体系 4 张（vip_plan/order/point_log/card）+ ad_slot。

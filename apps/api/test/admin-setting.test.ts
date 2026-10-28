@@ -6,7 +6,7 @@ import { l0Clear } from '../src/core/cache';
 import { issueAdminToken } from '../src/core/auth/admin';
 
 const SECRET = 'admin-secret';
-const STORED = JSON.stringify({ sitename: '319解说', runlevel: 5, user_create_on: 0, upload_max_size: 1048576, lang: 'zh-cn', custom_ext_keep: 'yes' });
+const STORED = JSON.stringify({ sitename: 'btc3149-bit', runlevel: 5, user_create_on: 0, upload_max_size: 1048576, lang: 'zh-cn', custom_ext_keep: 'yes' });
 
 function rules(): SqlRule[] {
   return [
@@ -44,7 +44,7 @@ describe('站点设置后台（T3-4 DoD）', () => {
     const res = await app.request('/api/admin/setting', { headers: { cookie: `admin_at=${await token()}` } }, env as never);
     const body = await jsonOf(res);
     expect(body.code).toBe(Code.OK);
-    expect((body.data as Record<string, unknown>).sitename).toBe('319解说');
+    expect((body.data as Record<string, unknown>).sitename).toBe('btc3149-bit');
     expect((body.data as Record<string, unknown>).custom_ext_keep).toBe('yes');
   });
 

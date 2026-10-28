@@ -1,4 +1,4 @@
-import { avatarUrl, presetAvatarSrc } from '../lib/api';
+import { avatarUrl } from '../lib/api';
 
 /** 五档圆形头像（§1.3：avatar-1..5 = 1.3/1.8/2.4/4.5/6 rem），无图降级用预设头像（/avatars/0..56.png 共 57 张，与后端白名单一致，按 uid 取模稳定分配） */
 const LEVEL: Record<1 | 2 | 3 | 4 | 5, string> = {
@@ -31,7 +31,7 @@ export function Avatar(props: {
   /* 列表页一屏可有数十个头像：统一 lazy + async 解码，避免首屏下方头像与主内容抢带宽
      （视口内的 lazy 图片浏览器仍会立即加载，顶部栏头像不受影响）；宽高已由 style 给定，无布局抖动 */
   if (!url) {
-    return <img src={presetAvatarSrc(`/avatars/${uid % PRESET_COUNT}.png`)} alt={username} loading="lazy" decoding="async" className={`${round} shrink-0 bg-line object-cover ${className ?? ''}`} style={box} />;
+    return <img src={`/avatars/${uid % PRESET_COUNT}.png`} alt={username} loading="lazy" decoding="async" className={`${round} shrink-0 bg-line object-cover ${className ?? ''}`} style={box} />;
   }
   return <img src={url} alt={username} loading="lazy" decoding="async" className={`${round} shrink-0 bg-line object-cover ${className ?? ''}`} style={box} />;
 }

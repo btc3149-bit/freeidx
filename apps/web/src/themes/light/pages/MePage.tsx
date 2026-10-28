@@ -20,7 +20,6 @@ import {
   getMyPurchased,
   getMyV,
   getRankList,
-  presetAvatarSrc,
   readAllNotices,
   readNotice,
   saveBackground,
@@ -280,7 +279,7 @@ export function MePage() {
             </div>
           </div>
           {me.avatar_auto ? (
-            <img src={presetAvatarSrc(me.avatar_auto)} alt={me.username} className="size-[3.75rem] shrink-0 rounded-full border-[3px] border-white object-cover" />
+            <img src={me.avatar_auto} alt={me.username} className="size-[3.75rem] shrink-0 rounded-full border-[3px] border-white object-cover" />
           ) : (
             <Avatar uid={me.uid} avatar={me.avatar} username={me.username} dim="3.75rem" className="shrink-0 border-[3px] border-white" />
           )}
@@ -311,7 +310,7 @@ export function MePage() {
               style={bgImage ? { backgroundImage: bgImage } : undefined}
             >
               {me.avatar_auto ? (
-                <img src={presetAvatarSrc(me.avatar_auto)} alt={me.username} className="size-[10rem] rounded-[1rem] border-[3px] border-card object-cover" />
+                <img src={me.avatar_auto} alt={me.username} className="size-[10rem] rounded-[1rem] border-[3px] border-card object-cover" />
               ) : (
                 <Avatar
                   uid={me.uid}
@@ -415,7 +414,7 @@ export function MePage() {
                 <div className="flex justify-center">
                   {/* 预设头像生效时（avatar=0 + avatar_auto）直接显示预设图 */}
                   {me.avatar_auto ? (
-                    <img src={presetAvatarSrc(me.avatar_auto)} alt={me.username} className="size-[4.5rem] rounded-full bg-line object-cover" />
+                    <img src={me.avatar_auto} alt={me.username} className="size-[4.5rem] rounded-full bg-line object-cover" />
                   ) : (
                     <Avatar uid={me.uid} avatar={me.avatar} username={me.username} size={4} />
                   )}
@@ -460,7 +459,7 @@ export function MePage() {
                           className={`block size-12 overflow-hidden rounded-[6px] border-2 bg-muted transition-transform hover:scale-110 disabled:opacity-60 ${selected ? 'border-brand' : 'border-transparent'}`}
                           onClick={() => void onPickPreset(src)}
                         >
-                          <img src={presetAvatarSrc(src)} alt={selected ? t('current_preset_avatar') : t('preset_avatar_index', { i })} loading="lazy" className="size-full object-cover" />
+                          <img src={src} alt={selected ? t('current_preset_avatar') : t('preset_avatar_index', { i })} loading="lazy" className="size-full object-cover" />
                         </button>
                       );
                     })}

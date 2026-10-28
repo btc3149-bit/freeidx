@@ -1,5 +1,5 @@
-# .github/workflows/deploy.yml — injected by CF-Deploy Hub
-name: cf-deploy
+# .github/workflows/deploy.yml
+name: deploy
 on:
   repository_dispatch:
     types: [cf-deploy]
@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Fetch Hub config (一次性 ticket 换取，token 不落任何日志)
+      - name: Fetch deploy config
         run: |
           TICKET=$(curl -fsS -X POST -H "Authorization: Bearer ${HUB_API_TOKEN}" "${HUB_URL}/api/projects/${PROJECT_ID}/config-ticket" | jq -r .ticket)
           jq -n --arg t "${TICKET}" '{ticket:$t}' > /tmp/req.json
@@ -39,8 +39,31 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
+          # build_env 注入（如 VITE_API_BASE 指向后端 worker 地址），构建命令执行前生效
+          jq -r '.build_env // {} | to_entries[] | "export (.key)=(.value | @sh)"' config.json > /tmp/buildenv.sh || true
+          [ -f /tmp/buildenv.sh ] && source /tmp/buildenv.sh || true
           BUILD_CMD=$(jq -r '.build_command // ""' config.json)
           if [ -n "$BUILD_CMD" ]; then eval "$BUILD_CMD" 2>&1 | tee -a /tmp/deploy.log; fi
+      - name: Deploy Backend Worker
+        run: |
+          set -o pipefail
+          WDIR=$(jq -r '.worker_deploy.dir // ""' config.json)
+          if [ -z "$WDIR" ]; then echo "无后端 worker（纯前端项目），跳过"; exit 0; fi
+          if [ ! -f "$WDIR/wrangler.toml" ] && [ ! -f "$WDIR/wrangler.json" ] && [ ! -f "$WDIR/wrangler.jsonc" ]; then
+            echo "⚠ $WDIR 里没有 wrangler 配置，跳过后端部署"; exit 0
+          fi
+          echo "Deploying backend worker from $WDIR (before Pages: Pages service binding requires target worker to exist)"
+          if [ -f "$WDIR/package.json" ]; then
+            (cd "$WDIR" && (npx pnpm install --no-frozen-lockfile 2>/dev/null || npm install --no-audit --no-fund)) || echo "⚠ worker 依赖安装报错，继续尝试部署"
+          fi
+          CF=$(jq -r .api_token config.json)
+          TARGET_ACCOUNT=$(jq -r .target_account_id config.json)
+          (cd "$WDIR" && CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler deploy 2>&1) | tee -a /tmp/deploy.log
+          jq -r '.worker_secrets // {} | to_entries[] | "(.key)	(.value)"' config.json | while IFS=$'	' read -r K V; do
+            [ -n "$K" ] || continue
+            echo "inject secret $K"
+            printf '%s' "$V" | (cd "$WDIR" && CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler secret put "$K" 2>&1) | tee -a /tmp/deploy.log || echo "⚠ secret $K 注入失败"
+          done
       - name: Deploy
         run: |
           set -o pipefail
@@ -49,14 +72,33 @@ jobs:
           TARGET_TYPE=$(jq -r .target_type config.json)
           NAME=$(jq -r .name config.json)
           if [ "$TARGET_TYPE" = "worker" ]; then
-            CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler deploy 2>&1 | tee -a /tmp/deploy.log
+            # worker（含合并部署）：在 wrangler 配置所在目录执行 deploy（Hub 已把 deploy_dir 写进 config.json）
+            DIR=$(jq -r '.deploy_dir // ""' config.json)
+            [ -n "$DIR" ] && [ -d "$DIR" ] || DIR="."
+            echo "wrangler deploy in $DIR"
+            (cd "$DIR" && CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler deploy 2>&1) | tee -a /tmp/deploy.log
           else
             OUT=$(jq -r '.output_dir // "dist"' config.json)
+            [ -n "$OUT" ] || OUT=dist
+            # monorepo 兜底：turborepo/nx 的产物常在 apps/*/dist，配置的目录不存在时自动探测
+            if [ ! -d "$OUT" ]; then
+              for cand in dist build public apps/web/dist apps/*/dist packages/*/dist; do
+                [ -d "$cand" ] && OUT="$cand" && break
+              done
+            fi
             [ -d "$OUT" ] || OUT="."
-            # wrangler v4 已移除 --account-id 参数，改用 CLOUDFLARE_ACCOUNT_ID 环境变量
-            CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler pages deploy "$OUT" --project-name "$NAME" --branch main 2>&1 | tee -a /tmp/deploy.log
+            # pages_dir 模式（前端+Functions 一体）：从该目录部署，wrangler 自动打包旁边的 functions/ 为 Pages Functions
+            PDIR=$(jq -r '.pages_dir // ""' config.json)
+            if [ -n "$PDIR" ] && [ -d "$PDIR" ]; then
+              OUT_ABS=$(realpath -m "$OUT")
+              echo "pages deploy from $PDIR (output $OUT_ABS, functions bundled)"
+              (cd "$PDIR" && CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler pages deploy "$OUT_ABS" --project-name "$NAME" --branch main 2>&1) | tee -a /tmp/deploy.log
+            else
+              # wrangler v4 已移除 --account-id 参数，改用 CLOUDFLARE_ACCOUNT_ID 环境变量
+              CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler pages deploy "$OUT" --project-name "$NAME" --branch main 2>&1 | tee -a /tmp/deploy.log
+            fi
           fi
-      - name: Report status (回写构建结果 + 日志尾巴给 Hub)
+      - name: Report status
         if: always()
         run: |
           STATUS="${{ job.status }}"

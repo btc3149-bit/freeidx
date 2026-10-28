@@ -805,12 +805,3 @@ export function avatarUrl(uid: number, v: number): string {
   const dir = String(uid).padStart(9, '0').slice(0, 3);
   return `/files/avatar/${dir}/${uid}.png?v=${v}`;
 }
-
-/**
- * 预设头像 src 加版本参数：预设图 URL 固定无 hash 且带 immutable 长缓存，
- * 一旦某节点/浏览器缓存过坏字节（历史 bug），原 URL 永远取不回新内容；
- * ?v=N 改变缓存键实现确定性失效。POST /api/my/avatar/preset 仍传规范路径（服务端白名单）。
- */
-export function presetAvatarSrc(src: string): string {
-  return src.startsWith('/avatars/') ? `${src}?v=2` : src;
-}

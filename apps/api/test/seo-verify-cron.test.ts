@@ -15,7 +15,7 @@ import { fakeAssets, fakeD1Sql, fakeKv, type SqlRule } from './helpers/fake-d1';
 
 const MASTER = btoa(String.fromCharCode(7).repeat(32));
 const OTHER = btoa(String.fromCharCode(9).repeat(32));
-const SETTING = JSON.stringify({ runlevel: 5, sitename: '319解说', brief: 'b', desc: '', url: 'http://localhost' });
+const SETTING = JSON.stringify({ runlevel: 5, sitename: 'btc3149-bit', brief: 'b', desc: '', url: 'http://localhost' });
 const GUEST_GROUP = { gid: 0, name: '游客组', creditsfrom: 0, creditsto: 0, allowread: 1, allowthread: 0, allowpost: 1, allowattach: 0, allowdown: 1, allowtop: 0, allowupdate: 0, allowdelete: 0, allowmove: 0, allowbanuser: 0, allowdeleteuser: 0, allowviewip: 0 };
 const FORUM_OPEN = { fid: 1, name: '默认版块', rank: 1, threads: 2, todayposts: 0, todaythreads: 0, brief: '介绍', announcement: '', accesson: 0, orderby: 0, icon: 0, moduids: '', seo_title: '', seo_keywords: '' };
 

@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import type { SearchUserHit, ThreadListItem } from '@freeidx/shared';
-import { apiGet, presetAvatarSrc } from '../../../lib/api';
+import { apiGet } from '../../../lib/api';
 import { posInt } from '../../../lib/params';
 import { Avatar } from '../../../components/Avatar';
 import { Pagination } from '../../../components/Pagination';
@@ -139,7 +139,7 @@ export function SearchPage() {
             {q.data.users.map((u) => (
               <li key={u.uid} className="flex items-center gap-3 border-b border-zh-line px-5 py-[0.7rem] last:border-b-0 hover:bg-zh-row-hover">
                 {u.avatar_auto ? (
-                  <img src={presetAvatarSrc(u.avatar_auto)} alt={u.username} className="size-10 shrink-0 rounded-full object-cover" />
+                  <img src={u.avatar_auto} alt={u.username} className="size-10 shrink-0 rounded-full object-cover" />
                 ) : (
                   <Avatar uid={u.uid} avatar={u.avatar} username={u.username} size={4} className="shrink-0" />
                 )}

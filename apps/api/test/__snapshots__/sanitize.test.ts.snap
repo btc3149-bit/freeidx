@@ -1,1 +1,11 @@
-Ly8gVml0ZXN0IFNuYXBzaG90IHYxLCBodHRwczovL3ZpdGVzdC5kZXYvZ3VpZGUvc25hcHNob3QuaHRtbAoKZXhwb3J0c1tg5b+r54Wn77yIQ0kg5Zue5b2S5Z+657q/77yMVDItNSDlt6XljZXopoHmsYLvvIkgPiBjb2RlX2Jsb2NrID4gY29kZV9ibG9jayAxYF0gPSBgIjxwcmU+PGNvZGU+aWYgKGEgJmx0OyBiKSB7IGNvbnNvbGUubG9nKDEpOyB9PC9jb2RlPjwvcHJlPiJgOwoKZXhwb3J0c1tg5b+r54Wn77yIQ0kg5Zue5b2S5Z+657q/77yMVDItNSDlt6XljZXopoHmsYLvvIkgPiBmb250X2xlZ2FjeSA+IGZvbnRfbGVnYWN5IDFgXSA9IGAiPGZvbnQgZmFjZT0i5b6u6L2v6ZuF6buRIiBzaXplPSI1IiBjb2xvcj0iI2ZmMDAwMCI+5pen57yW6L6R5ZmoPC9mb250PiJgOwoKZXhwb3J0c1tg5b+r54Wn77yIQ0kg5Zue5b2S5Z+657q/77yMVDItNSDlt6XljZXopoHmsYLvvIkgPiBsaXN0X25lc3RlZCA+IGxpc3RfbmVzdGVkIDFgXSA9IGAiPHVsPjxsaT7kuIA8dWw+PGxpPuWGhTwvbGk+PC91bD48L2xpPjxsaT7kuow8L2xpPjwvdWw+ImA7CgpleHBvcnRzW2Dlv6vnhafvvIhDSSDlm57lvZLln7rnur/vvIxUMi01IOW3peWNleimgeaxgu+8iSA+IG1peGVkX2F0dGFjayA+IG1peGVkX2F0dGFjayAxYF0gPSBgIjxiPueylzwvYj48YSBocmVmPSIiPumTvuaOpTwvYT48aWZyYW1lIHNyYz0iIj48L2lmcmFtZT4iYDsKCmV4cG9ydHNbYOW/q+eFp++8iENJIOWbnuW9kuWfuue6v++8jFQyLTUg5bel5Y2V6KaB5rGC77yJID4gcmljaF9wb3N0ID4gcmljaF9wb3N0IDFgXSA9IGAiPGRpdiBjbGFzcz0icXVvdGUiPjxwPuW8leeUqOihjCZuYnNwOyZuYnNwO+WKoOeylzwvcD48dGFibGUgc3R5bGU9IndpZHRoOjEwMCU7IGJhY2tncm91bmQ6dXJsKDEuanBnKSBuby1yZXBlYXQ7Ij48dGJvZHk+PHRyPjx0ZCB3aWR0aD0iNjAiPjxpbWcgc3JjPSJodHRwOi8vY2RuLmV4YW1wbGUuY29tL2EucG5nIiB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIC8+PC90ZD48L3RyPjwvdGJvZHk+PC90YWJsZT48L2Rpdj4iYDsK
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`快照（CI 回归基线，T2-5 工单要求） > code_block > code_block 1`] = `"<pre><code>if (a &lt; b) { console.log(1); }</code></pre>"`;
+
+exports[`快照（CI 回归基线，T2-5 工单要求） > font_legacy > font_legacy 1`] = `"<font face="微软雅黑" size="5" color="#ff0000">旧编辑器</font>"`;
+
+exports[`快照（CI 回归基线，T2-5 工单要求） > list_nested > list_nested 1`] = `"<ul><li>一<ul><li>内</li></ul></li><li>二</li></ul>"`;
+
+exports[`快照（CI 回归基线，T2-5 工单要求） > mixed_attack > mixed_attack 1`] = `"<b>粗</b><a href="">链接</a><iframe src=""></iframe>"`;
+
+exports[`快照（CI 回归基线，T2-5 工单要求） > rich_post > rich_post 1`] = `"<div class="quote"><p>引用行&nbsp;&nbsp;加粗</p><table style="width:100%; background:url(1.jpg) no-repeat;"><tbody><tr><td width="60"><img src="http://cdn.example.com/a.png" width="54" height="54" /></td></tr></tbody></table></div>"`;

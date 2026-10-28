@@ -1,4 +1,4 @@
-# 319解说
+# btc3149-bit
 
 **English · [简体中文](docs/README-cn.md) · [繁體中文](docs/README-zh-tw.md) · [日本語](docs/README-ja.md) · [한국어](docs/README-ko.md) · [Français](docs/README-fr.md) · [Deutsch](docs/README-de.md) · [Español](docs/README-es.md) · [Русский](docs/README-ru.md) · [ไทย](docs/README-th.md)**
 
@@ -163,7 +163,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 Your fork ships with `.github/workflows/sync-upstream.yml`. Once Actions are enabled, it runs daily and requires **no extra secrets** beyond the two Cloudflare ones:
 
-- Fast-forwards your `main` (and tags) to the upstream `319解说/319解说` `main` — upstream is fetched anonymously since it's public;
+- Fast-forwards your `main` (and tags) to the upstream `btc3149-bit/btc3149-bit` `main` — upstream is fetched anonymously since it's public;
 - Pushes the update and triggers the deploy workflow automatically, so your site follows upstream releases within a day;
 - Turns **red** in the Actions tab if your `main` has diverged from upstream (e.g. you committed to it directly) — resolve the conflict once, or keep private customizations on a separate branch and leave `main` untouched.
 
@@ -199,12 +199,12 @@ No Route configuration needed — `/api/*`, `/files/*`, and page paths are all i
 
 **Default admin account** (change it immediately after first login!):
 
-- Email: `kwl134999@gmail.com` / Password: `1`
+- Email: `332726547+btc3149-bit@users.noreply.github.com` / Password: `1`
 
 ## 📦 Repository Structure
 
 ```
-319解说/
+btc3149-bit/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)
@@ -226,3 +226,13 @@ This project is licensed under the [GNU Affero General Public License v3.0 (AGPL
 - 💬 Issues and Pull Requests are welcome
 - 🌟 If this helps you, please Star this project!
 
+
+
+<!-- hub-contact -->
+## 联系作者
+
+- 个人微信
+
+![客服微信](docs/contact/qrmvp37fpo8324.png)
+
+![个人微信](docs/contact/qrmvp37l9l4474.png)

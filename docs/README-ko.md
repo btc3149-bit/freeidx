@@ -1,4 +1,4 @@
-# 319解说
+# btc3149-bit
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · **한국어** · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -185,12 +185,12 @@ Route 설정은 필요 없습니다 — `/api/*`, `/files/*`, 페이지 경로�
 
 **기본 관리자 계정** (첫 로그인 직후 반드시 변경하세요!):
 
-- 이메일: `kwl134999@gmail.com` / 비밀번호: `1`
+- 이메일: `332726547+btc3149-bit@users.noreply.github.com` / 비밀번호: `1`
 
 ## 📦 저장소 구조
 
 ```
-319解说/
+btc3149-bit/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

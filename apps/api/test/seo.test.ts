@@ -19,7 +19,7 @@ const BOT = { 'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www
 const HUMAN = { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/120' };
 
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
+  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
 });
@@ -244,7 +244,7 @@ describe('爬虫预渲染分发（§16.1 核心管线）', () => {
     const f = await app.request('/forum/1', { headers: BOT }, env as never);
     expect(await f.text()).toContain('<h1>默认版块</h1>');
     const i = await app.request('/', { headers: BOT }, env as never);
-    expect(await i.text()).toContain('<title>319解说</title>');
+    expect(await i.text()).toContain('<title>btc3149-bit</title>');
   });
 
   it('主题不存在 → 交回核心 404，不硬造页面', async () => {

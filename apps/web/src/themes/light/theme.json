@@ -17,7 +17,7 @@
     "en-us": "Built-in base theme: the site layout and every front-end page are implemented inside this theme folder; appearance options live in the Simple Blue plugin."
   },
   "version": "1.0.0",
-  "author": "319解说",
+  "author": "btc3149-bit",
   "order": 0,
   "configPath": "/admin/extensions/light"
 }

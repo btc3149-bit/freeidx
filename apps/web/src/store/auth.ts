@@ -1,7 +1,6 @@
 /** useAuth：bootstrap 一次拉取（setting/forumlist/grouplist/me），Zustand 全局态（§10.3） */
 import { create } from 'zustand';
-import type { ForumNode, GroupRow, SiteSetting, UserBrief } from '@freeidx/shared';
-import { md5Hex } from '@freeidx/shared';
+import { md5Hex, type ForumNode, type GroupRow, type SiteSetting, type UserBrief } from '@freeidx/shared';
 import { bootstrap, login, logout, onSessionExpired, register, type LoginResult, type RegisterResult } from '../lib/api';
 import { queryClient } from '../lib/query-client';
 
@@ -25,6 +24,11 @@ interface AuthState {
     unreadNotices?: number;
     /** 账号审核状态（bootstrap me）：1=正常 0=待审核 -1=未通过；非 1 首页顶部提示 */
     ok?: number;
+    /** 小黑屋（bootstrap me）：生效中的封禁位（0=未封禁/已到期）1 禁言 2 禁访 4 禁登 */
+    banScope?: number;
+    /** 封禁到期（unix 秒，0=永久） */
+    banUntil?: number;
+    banReason?: string;
     /** see_check 组（bootstrap me）：列表显示审核图标、帖内现场审核按钮 */
     seeCheck?: boolean;
     /** 预设头像路径（user.avatar_auto，如 /avatars/7.png；avatar=0 且已设预设时才下发） */
@@ -50,15 +54,6 @@ interface AuthState {
   signOut: () => Promise<void>;
 }
 
-/**
- * bootstrap 单飞（性能项 C1 的配套）：首屏预载（main.tsx）、Layout 挂载、会话失效兜底
- * 三方都可能在 loaded 变 true 之前调用 load()，没有单飞时它们会各发一次请求
- * （每次多耗 1 次 Worker 请求，且响应乱序时可能用旧结果覆盖新结果）。
- * force（登录/登出/会话失效）必须拿到登录态变更**之后**的结果，所以先等掉进行中的请求再发新的，
- * 不能直接复用它。
- */
-let bootstrapInflight: Promise<void> | null = null;
-
 export const useAuth = create<AuthState>((set, get) => ({
   loaded: false,
   setting: null,
@@ -68,23 +63,11 @@ export const useAuth = create<AuthState>((set, get) => ({
   error: null,
   load: async (force = false) => {
     if (get().loaded && !force) return;
-    if (bootstrapInflight) {
-      if (!force) return bootstrapInflight;
-      await bootstrapInflight.catch(() => undefined);
-    }
-    const p = (async () => {
-      try {
-        const d = await bootstrap();
-        set({ loaded: true, setting: d.setting, forumlist: d.forumlist, grouplist: d.grouplist, me: d.me, runtime: d.runtime, ext: d.ext, error: null });
-      } catch (e) {
-        set({ error: e instanceof Error ? e.message : String(e) });
-      }
-    })();
-    bootstrapInflight = p;
     try {
-      await p;
-    } finally {
-      if (bootstrapInflight === p) bootstrapInflight = null;
+      const d = await bootstrap();
+      set({ loaded: true, setting: d.setting, forumlist: d.forumlist, grouplist: d.grouplist, me: d.me, runtime: d.runtime, ext: d.ext, error: null });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
   refresh: async () => {

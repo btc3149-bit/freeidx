@@ -21,7 +21,7 @@ const EMAIL_SECRET_TOKEN = await encryptSecret(JSON.stringify({ passes: ['smtp-p
 
 const settingJson = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
-    runlevel: 5, sitename: '319解说', user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1, lang: 'zh-cn',
+    runlevel: 5, sitename: 'btc3149-bit', user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1, lang: 'zh-cn',
     ...over,
   });
 

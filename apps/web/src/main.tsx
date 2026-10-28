@@ -14,7 +14,7 @@ import './styles/globals.css';
 
 /* 主题彩蛋：控制台版权输出（配色 #409EFF / #f2f3f5） */
 console.log(
-  '%c 319解说 %c Powered by 319解说 ',
+  '%c btc3149-bit %c Powered by btc3149-bit ',
   'background:#409eff;color:#fff;font-weight:bold;border-radius:2px 0 0 2px;padding:1px 4px',
   'background:#f2f3f5;color:#606060;border-radius:2px 2px 2px 0;padding:1px 4px',
 );

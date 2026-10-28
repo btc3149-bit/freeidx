@@ -1,4 +1,4 @@
--- 319解说 0010_avatar_auto — 预设头像
+-- btc3149-bit 0010_avatar_auto — 预设头像
 -- 用户头像设为站内预设图（前端静态资源 /avatars/0..56.png）：
 --   选预设（imgsrc 非空）→ avatar_auto=路径 + avatar=0（与自定义头像互斥，同步删除旧自定义头像文件）
 --   仅清预设（imgsrc 为空）→ avatar_auto 置 '0'，不动 avatar

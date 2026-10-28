@@ -15,7 +15,7 @@ const USER = {
   token_version: 7, password: 'x', salt: 's', email: 'a@b.c',
 };
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
+  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
 });

@@ -161,7 +161,7 @@ function formatTable(text) {
 }
 
 function renderHeader(tables, indexes) {
-  return `-- 319解说 终态 schema 快照 —— 自动生成，请勿手工编辑
+  return `-- btc3149-bit 终态 schema 快照 —— 自动生成，请勿手工编辑
 --
 -- 生成：pnpm --filter @freeidx/api db:schema:dump
 -- 校验：pnpm --filter @freeidx/api db:schema:check（CI 门禁，不一致即红）

@@ -44,7 +44,7 @@ apps/web/src/themes/
   "name": { "zh-cn": "演示主题", "en-us": "Demo" },
   "description": { "zh-cn": "……", "en-us": "……" },
   "version": "1.0.0",
-  "author": "319解说",
+  "author": "btc3149-bit",
   "order": 10,
   "configPath": "/admin/extensions/light"
 }

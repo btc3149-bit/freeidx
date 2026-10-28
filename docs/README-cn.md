@@ -1,4 +1,4 @@
-# 319解说
+# btc3149-bit
 
 [English](../README.md) · **简体中文** · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · [한국어](README-ko.md) · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -185,12 +185,12 @@ Workers & Pages → Create → **Continue with GitHub** 也能部署，但要求
 
 **默认管理员账号**（首次登录后请立即修改！）：
 
-- 邮箱: `kwl134999@gmail.com` / 密码: `1`
+- 邮箱: `332726547+btc3149-bit@users.noreply.github.com` / 密码: `1`
 
 ## 📦 仓库结构
 
 ```
-319解说/
+btc3149-bit/
 ├── apps/
 │   ├── web/               # 前端 React 19 SPA → Worker Static Assets
 │   └── api/               # 后端 Hono Worker（含 migrations/）

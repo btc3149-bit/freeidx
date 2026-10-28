@@ -1,4 +1,4 @@
--- 319解说 0006_notice — 消息系统（huux_notice）。
+-- btc3149-bit 0006_notice — 消息系统（huux_notice）。
 -- type：0=全部（仅查询过滤用）· 2=评论（回帖/引用通知）· 3=系统（版务/管理员通知）· 99=其他。
 -- 计数口径：notices / unread_notices 不设反规范化列，
 -- 未读数实时 COUNT 走 (recvuid, isread) 索引（与 0002_social 同一取舍，量级低频写）。

@@ -1,4 +1,4 @@
--- 319解说 0008_credits — 积分交易
+-- btc3149-bit 0008_credits — 积分交易
 -- 三币种列 credits(经验)/golds(金币)/rmbs(人民币·分) 与 group.creditsfrom/creditsto 已在 0001 建好；
 -- 本迁移补齐：主题付费位（content_buy/content_buy_type）、用户组收费权限（allowsell）与两张流水表。
 

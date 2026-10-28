@@ -149,7 +149,7 @@ export function fakeAssets(files: Record<string, string> = {}) {
       const path = new URL(req.url).pathname;
       const hit = files[path];
       if (hit === undefined) {
-        return new Response('<!doctype html><html><head><title>319解说</title></head><body><div id="root"></div></body></html>', {
+        return new Response('<!doctype html><html><head><title>btc3149-bit</title></head><body><div id="root"></div></body></html>', {
           headers: { 'content-type': 'text/html; charset=utf-8' },
         });
       }

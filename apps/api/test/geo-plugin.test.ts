@@ -12,7 +12,7 @@ import { l0Clear } from '../src/core/cache';
 import { fakeAssets, fakeD1Sql, fakeKv, type SqlRule } from './helpers/fake-d1';
 
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: '319解说', brief: 'b', desc: '', url: 'http://localhost',
+  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', desc: '', url: 'http://localhost',
 });
 const GUEST_GROUP = {
   gid: 0, name: '游客组', creditsfrom: 0, creditsto: 0, allowread: 1, allowthread: 0, allowpost: 1,
@@ -216,7 +216,7 @@ describe('/llms.txt（registerRoute）', () => {
     const res = await app.request('/llms.txt', { headers: { 'user-agent': 'Mozilla/5.0' } }, env as never);
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain('# 319解说');
+    expect(text).toContain('# btc3149-bit');
     expect(text).toContain('- [默认版块](http://localhost/forum/1)');
     expect(text).toContain('- [精华帖](http://localhost/thread/7)');
     expect(text).toContain('CC BY 4.0');

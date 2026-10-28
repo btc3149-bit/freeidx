@@ -1,4 +1,4 @@
-# 319解说
+# btc3149-bit
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · **日本語** · [한국어](README-ko.md) · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -185,12 +185,12 @@ Route の設定は不要です。`/api/*`、`/files/*`、ページのパスは�
 
 **デフォルトの管理者アカウント**（初回ログイン後、必ずすぐに変更してください！）：
 
-- メールアドレス: `kwl134999@gmail.com` / パスワード: `1`
+- メールアドレス: `332726547+btc3149-bit@users.noreply.github.com` / パスワード: `1`
 
 ## 📦 リポジトリ構成
 
 ```
-319解说/
+btc3149-bit/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

@@ -1,4 +1,4 @@
-# 319解说
+# btc3149-bit
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · [한국어](README-ko.md) · [Français](README-fr.md) · [Deutsch](README-de.md) · **Español** · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -185,12 +185,12 @@ No es necesaria ninguna configuración de Route — `/api/*`, `/files/*` y las r
 
 **Cuenta de administrador por defecto** (¡cámbiala inmediatamente después del primer inicio de sesión!):
 
-- Correo electrónico: `kwl134999@gmail.com` / Contraseña: `1`
+- Correo electrónico: `332726547+btc3149-bit@users.noreply.github.com` / Contraseña: `1`
 
 ## 📦 Estructura del repositorio
 
 ```
-319解说/
+btc3149-bit/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

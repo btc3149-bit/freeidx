@@ -1,4 +1,4 @@
-# 319解说
+# btc3149-bit
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · [한국어](README-ko.md) · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · **Русский** · [ไทย](README-th.md)
 
@@ -185,12 +185,12 @@ Workers & Pages → Create → **Continue with GitHub** тоже работае�
 
 **Аккаунт администратора по умолчанию** (сразу смените его после первого входа!):
 
-- Email: `kwl134999@gmail.com` / Пароль: `1`
+- Email: `332726547+btc3149-bit@users.noreply.github.com` / Пароль: `1`
 
 ## 📦 Структура репозитория
 
 ```
-319解说/
+btc3149-bit/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

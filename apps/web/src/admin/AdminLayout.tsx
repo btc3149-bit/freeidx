@@ -62,7 +62,7 @@ const MENU: MenuGroup[] = [
   {
     label: { textKey: 'admin_menu_user', fallback: 'User' },
     items: [
-      { key: 'user', to: '/admin/users', label: { textKey: 'admin_menu_user_manage', fallback: 'User Management' }, icon: 'user', prefixes: ['/admin/users', '/admin/groups'] },
+      { key: 'user', to: '/admin/users', label: { textKey: 'admin_menu_user_manage', fallback: 'User Management' }, icon: 'user', prefixes: ['/admin/users', '/admin/banned', '/admin/groups'] },
       /* 「加V认证」后台（待审核/已通过/手动加V/收费设置四档同页切换）；
          icon 取 star（加V/认证徽章语义，shield 已被「内容审核」占用） */
       { key: 'v', to: '/admin/v', label: { textKey: 'admin_menu_v_verify', fallback: 'V Verification' }, icon: 'star', prefixes: ['/admin/v'] },
@@ -180,12 +180,12 @@ export function AdminLayout() {
           open && 'ml-0',
         )}
       >
-        {/* 品牌区：居中 logo（有 logo_url 用图，否则用自绘 319解说 字标） */}
+        {/* 品牌区：居中 logo（有 logo_url 用图，否则用自绘 btc3149-bit 字标） */}
         <div className="flex h-[calc(3.5rem+1px)] shrink-0 items-center justify-center border-b border-line-soft px-3 text-center">
           {setting?.logo_url ? (
             <img src={String(setting.logo_url)} alt={setting.sitename} className="h-[36px] rounded-full" />
           ) : (
-            <img src={admWordmark} alt={setting?.sitename || '319解说'} className="h-[30px] w-auto" />
+            <img src={admWordmark} alt={setting?.sitename || 'btc3149-bit'} className="h-[30px] w-auto" />
           )}
         </div>
         <div className="adm-sidebar min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-2">
@@ -270,7 +270,7 @@ export function AdminLayout() {
         {/* 页脚：白底 + 上边发丝线 + 灰字 */}
         <footer className={cx('flex flex-wrap justify-between gap-2 border-t border-line bg-surface px-5 py-3 text-xs text-adm-footer-ink', shift)}>
           <span>
-            Powered by <b>319解说</b>
+            Powered by <b>btc3149-bit</b>
           </span>
           <span className="text-right">{setting?.sitename}</span>
         </footer>

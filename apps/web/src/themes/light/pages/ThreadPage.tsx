@@ -2,7 +2,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { Code, PageSize, type FavoriterItem, type FrontKey, type HotPostsData, type PostItem, type ThreadDetail } from '@freeidx/shared';
-import { ApiError, apiGet, checkAudit, createReply, deletePost, fetchPostReplies, fetchQuickReplyMessage, fmtDate, getThreadPaylist, modThreads, payThread, presetAvatarSrc, recycleThread, toggleFavorite, toggleLike, togglePostLike, updatePost } from '../../../lib/api';
+import { ApiError, apiGet, checkAudit, createReply, deletePost, fetchPostReplies, fetchQuickReplyMessage, fmtDate, getThreadPaylist, modThreads, payThread, recycleThread, toggleFavorite, toggleLike, togglePostLike, updatePost } from '../../../lib/api';
 import { apiErrorMessage } from '../../../lib/errors';
 import { posInt } from '../../../lib/params';
 import { AttachRows } from '../../../components/AttachRows';
@@ -418,7 +418,7 @@ export function ThreadPage() {
   const th = d?.thread;
   /* 标签页标题：主题加载后覆盖 Layout 基线为「主题标题 - 站点名」 */
   useEffect(() => {
-    if (th?.subject) document.title = `${th.subject} - ${setting?.sitename || '319解说'}`;
+    if (th?.subject) document.title = `${th.subject} - ${setting?.sitename || 'btc3149-bit'}`;
   }, [th?.subject, setting?.sitename]);
   const perms = d?.perms;
   const opUid = th?.uid ?? 0;
@@ -1013,7 +1013,7 @@ export function ThreadPage() {
                           type: th.contentBuyType,
                           purchased: d.purchased,
                           tid,
-                          sitename: setting?.sitename || '319解说',
+                          sitename: setting?.sitename || 'btc3149-bit',
                           t,
                         }),
                       }}
@@ -1534,7 +1534,7 @@ export function ThreadPage() {
               <div className="flex items-start gap-2.5 border-b border-zh-line pb-3">
                 <Link to={`/user/${replies.data.head.uid}`} aria-label={replies.data.head.username} onClick={() => setRepliesPid(null)} className="shrink-0">
                   {replies.data.head.avatar_auto ? (
-                    <img src={presetAvatarSrc(replies.data.head.avatar_auto)} alt={replies.data.head.username} className="size-10 rounded-full object-cover" />
+                    <img src={replies.data.head.avatar_auto} alt={replies.data.head.username} className="size-10 rounded-full object-cover" />
                   ) : (
                     <Avatar uid={replies.data.head.uid} avatar={replies.data.head.avatar} username={replies.data.head.username} size={3} />
                   )}
@@ -1561,7 +1561,7 @@ export function ThreadPage() {
                     <li key={x.pid} className="mt-3 flex items-start gap-2.5 border-b border-zh-line pb-3 last:border-b-0">
                       <Link to={`/user/${x.uid}`} aria-label={x.username} onClick={() => setRepliesPid(null)} className="shrink-0">
                         {x.avatar_auto ? (
-                          <img src={presetAvatarSrc(x.avatar_auto)} alt={x.username} className="size-10 rounded-full object-cover" />
+                          <img src={x.avatar_auto} alt={x.username} className="size-10 rounded-full object-cover" />
                         ) : (
                           <Avatar uid={x.uid} avatar={x.avatar} username={x.username} size={3} />
                         )}

@@ -2,7 +2,7 @@
 
 **Last updated: October 10, 2026**
 
-> **IMPORTANT NOTICE: Before you download, clone, compile, deploy, run, or use this project (319解说, the "Project") in any manner, you must read this legal disclaimer in its entirety and with due care. By performing any of the foregoing acts, you shall be deemed to have fully read, understood, and agreed to be bound by all the terms and conditions of this disclaimer. If you do not agree to any part of this disclaimer, you must immediately cease using the Project and delete all copies thereof.**
+> **IMPORTANT NOTICE: Before you download, clone, compile, deploy, run, or use this project (btc3149-bit, the "Project") in any manner, you must read this legal disclaimer in its entirety and with due care. By performing any of the foregoing acts, you shall be deemed to have fully read, understood, and agreed to be bound by all the terms and conditions of this disclaimer. If you do not agree to any part of this disclaimer, you must immediately cease using the Project and delete all copies thereof.**
 
 ***
 

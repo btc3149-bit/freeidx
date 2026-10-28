@@ -46,7 +46,7 @@ if (!/^v\d/.test(tag)) fail(`Tag ${tag} 不是 v 开头的版本号，已跳过`
 const targetCommitish = tryGit(['rev-parse', '--verify', `${tag}^{commit}`]);
 if (!targetCommitish) fail(`本地找不到 Tag ${tag}，请先执行 git fetch --tags`);
 
-const repository = process.env.GITHUB_REPOSITORY ?? '319解说/319解说';
+const repository = process.env.GITHUB_REPOSITORY ?? 'btc3149-bit/btc3149-bit';
 const server = process.env.GITHUB_SERVER_URL ?? 'https://github.com';
 const repoUrl = `${server}/${repository}`;
 
@@ -78,7 +78,7 @@ if (!existsSync(changelogAbs)) {
   const body = lines.length ? lines.join('\n') : '- 本次发布没有新的代码提交。';
   const compare = baseTag ? `\n\n## 完整变更\n\n${repoUrl}/compare/${baseTag}...${tag}\n` : '';
   mkdirSync(dirname(changelogAbs), { recursive: true });
-  writeFileSync(changelogAbs, `# 319解说 ${tag}\n\n## 主要内容\n\n${body}${compare}\n`, 'utf8');
+  writeFileSync(changelogAbs, `# btc3149-bit ${tag}\n\n## 主要内容\n\n${body}${compare}\n`, 'utf8');
   console.log(`[release] 已生成更新日志：${changelogPath}`);
 } else {
   console.log(`[release] 更新日志已存在，保留原内容：${changelogPath}`);
@@ -86,7 +86,7 @@ if (!existsSync(changelogAbs)) {
 
 const entry = {
   tagName: tag,
-  name: existing?.name ?? `319解说 ${tag}`,
+  name: existing?.name ?? `btc3149-bit ${tag}`,
   htmlUrl: `${repoUrl}/releases/tag/${tag}`,
   changelogPath,
   publishedAt: existing?.publishedAt ?? publishedAt,

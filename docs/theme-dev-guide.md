@@ -157,7 +157,7 @@ export function MyLayout({ children }: { children?: ReactNode }) {
     "en-us": "Sample full theme: overrides the header/footer slots and replaces the home page."
   },
   "version": "1.0.0",
-  "author": "319解说",
+  "author": "btc3149-bit",
   "order": 10
 }
 ```
@@ -173,7 +173,7 @@ import type { ThemeModule } from '../../lib/theme/types';
 function DemoHeader() {
   const setting = useAuth((s) => s.setting);
   const t = useT();
-  const name = setting?.sitename || '319解说';
+  const name = setting?.sitename || 'btc3149-bit';
   return (
     <header className="fi-theme-demo-bar fixed inset-x-0 top-0 z-[999] border-b border-white/10 bg-slate-900/85">
       <div className="mx-auto flex h-[68px] w-full max-w-[1140px] items-center gap-3 px-4 3xl:max-w-[1536px]">
@@ -209,7 +209,7 @@ function DemoFooter() {
   return (
     <footer className="border-t border-white/10 bg-slate-900 py-5 text-[13px] text-slate-400">
       <div className="mx-auto flex w-full max-w-[1140px] flex-wrap justify-between gap-2 px-4 3xl:max-w-[1536px]">
-        <span>Powered by 319解说 · Demo</span>
+        <span>Powered by btc3149-bit · Demo</span>
         <span>{setting?.sitename}</span>
       </div>
     </footer>
@@ -227,7 +227,7 @@ function DemoHome() {
     <div className="fi-theme-demo -mt-[100px] pt-[100px] lg:-mt-[83px] lg:pt-[83px]">
       <section className="fi-theme-demo-hero relative overflow-hidden">
         <div className="relative z-10 mx-auto w-full max-w-[1140px] px-4 py-16 text-white 3xl:max-w-[1536px]">
-          <h1 className="m-0 text-[32px] leading-tight font-bold">{setting?.sitename || '319解说'}</h1>
+          <h1 className="m-0 text-[32px] leading-tight font-bold">{setting?.sitename || 'btc3149-bit'}</h1>
           {setting?.brief && <p className="mt-3 max-w-[52ch] text-[15px] leading-relaxed text-slate-300">{setting.brief}</p>}
           <div className="mt-6 flex flex-wrap gap-2">
             {topForums.slice(0, 3).map((f) => (

@@ -5,7 +5,7 @@ import { fakeD1Sql, fakeKv, type SqlRule } from './helpers/fake-d1';
 import { l0Clear } from '../src/core/cache';
 
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
+  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
 });
@@ -181,7 +181,7 @@ describe('只读接口集成（T1-4 DoD）', () => {
     const d = body.data as { forumlist: { fid: number; name: string }[]; me: unknown; setting: { sitename: string; mailOn?: boolean } };
     expect(d.forumlist[0]!.name).toBe('默认版块');
     expect(d.me).toBeNull();
-    expect(d.setting.sitename).toBe('319解说');
+    expect(d.setting.sitename).toBe('btc3149-bit');
     // 未配置 SMTP 池 ⇒ mailOn=false：前端据此隐藏验证码框（后端此时按「验证关闭」降级）
     expect(d.setting.mailOn).toBe(false);
   });

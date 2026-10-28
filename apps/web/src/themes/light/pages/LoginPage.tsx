@@ -38,11 +38,11 @@ export function LoginPage() {
             />
             <div className="relative">
               {/* 站点 logo/站名，点击回首页 */}
-              <Link to="/" className="mb-6 flex items-center gap-2" aria-label={setting?.sitename || '319解说'}>
+              <Link to="/" className="mb-6 flex items-center gap-2" aria-label={setting?.sitename || 'btc3149-bit'}>
                 {setting?.logo_url ? (
                   <img src={String(setting.logo_url)} alt={setting.sitename} className="h-9 w-auto max-w-none" />
                 ) : (
-                  <span className="text-lg font-bold text-brand">{setting?.sitename || '319解说'}</span>
+                  <span className="text-lg font-bold text-brand">{setting?.sitename || 'btc3149-bit'}</span>
                 )}
               </Link>
               <p className="text-sm text-lt-grey">{t('user_login')}</p>
