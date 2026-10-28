@@ -17,12 +17,12 @@ run_worker_first = ["/*", "!/assets/*", "!/emoicon/*", "!/avatars/*", "!/theme-l
 [[d1_databases]]
 binding = "DB"
 database_name = "freeidx"
-database_id = "00000000-0000-0000-0000-000000000000" # TODO: wrangler d1 create freeidx 后回填
+database_id = "b28de42c-ec88-4f7f-bbe0-081d68a208f3" # TODO: wrangler d1 create freeidx 后回填
 
 [[kv_namespaces]]
 binding = "CACHE" # 代码中经 env.CACHE 访问，保持不变
 # 云端命名空间名用 freeidx-cache（避免与其他项目重名），CI 自动创建/复用
-id = "00000000-0000-0000-0000-000000000000" # TODO: wrangler kv namespace create freeidx-cache 后回填
+id = "3debc105a56d4a0bb2ae6db4eb4743dd" # 已由 Hub 自动补全
 
 [[r2_buckets]]
 binding = "FILES"
