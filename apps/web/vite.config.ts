@@ -7,6 +7,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { i18nSplitPlugin } from '../../scripts/i18n-split.plugin';
 
+import { adminPrefixPlugin } from '../../scripts/admin-prefix.plugin.mjs';
 const webRoot = dirname(fileURLToPath(import.meta.url));
 
 function git(args: string[]): string | null {
@@ -94,7 +95,7 @@ export default defineConfig({
     __BUILD_NUM__: JSON.stringify(buildNum),
   },
   // 词典按「命名空间 × 语言」分包（前台 bbs / 后台 admin 各自成 chunk，见 packages/shared/src/i18n/bundles.ts）
-  plugins: [react(), tailwindcss(), i18nSplitPlugin(resolve(webRoot, '../../packages/shared/src/i18n'))],
+  plugins: [adminPrefixPlugin(), react(), tailwindcss(), i18nSplitPlugin(resolve(webRoot, '../../packages/shared/src/i18n'))],
   server: {
     proxy: {
       // 本地同域开发：/api 与 /files 转发到 Worker（§13.2 同域方案的本地等价）
