@@ -54,6 +54,17 @@ interface AuthState {
   signOut: () => Promise<void>;
 }
 
+/**
+ * 在途请求单飞（性能项）：`main.tsx` 在模块求值时就发起 load()，`Layout` 挂载时还会再调一次。
+ * 只判断 `loaded` 挡不住并发——bootstrap 未返回前两次调用都会真发请求（实测冷启动/慢网必现
+ * 两个 /api/bootstrap，各打一次 D1，白等一个 RTT）。这里用模块级 Promise 合并。
+ *
+ * force（登录/登出/会话失效后的强制刷新）**不复用在途请求**：那个请求可能在本次鉴权变更
+ * 之前就发出了，复用会拿到过期快照（例如刚登录完顶栏还是游客）。此时先等在途请求落地，
+ * 再发一次新的；非 force 的并发调用则合并为同一次。
+ */
+let inflight: Promise<void> | null = null;
+
 export const useAuth = create<AuthState>((set, get) => ({
   loaded: false,
   setting: null,
@@ -62,16 +73,31 @@ export const useAuth = create<AuthState>((set, get) => ({
   me: null,
   error: null,
   load: async (force = false) => {
-    if (get().loaded && !force) return;
-    try {
-      const d = await bootstrap();
-      set({ loaded: true, setting: d.setting, forumlist: d.forumlist, grouplist: d.grouplist, me: d.me, runtime: d.runtime, ext: d.ext, error: null });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+    if (!force) {
+      if (get().loaded) return;
+      if (inflight) return inflight;
+    } else if (inflight) {
+      await inflight.catch(() => undefined);
     }
+    /* 等待在途请求期间任意一方可能已经把数据填好（非 force 场景不必再发） */
+    if (!force && get().loaded) return;
+    inflight = (async () => {
+      try {
+        const d = await bootstrap();
+        set({ loaded: true, setting: d.setting, forumlist: d.forumlist, grouplist: d.grouplist, me: d.me, runtime: d.runtime, ext: d.ext, error: null });
+      } catch (e) {
+        set({ error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
   },
   refresh: async () => {
     await get().load(true);
+    // 改密/会话失效等场景同样改变了鉴权态：详情/列表的 perms 与计数由服务端按访问者下发，
+    // 与 signIn/signUp/signOut 同口径失效全量缓存，避免游客界面配登录态缓存。
+    void queryClient.invalidateQueries();
   },
   // 后端要求前端预哈希 md5(明文)（§8.4），登录/注册成功后 re-fetch bootstrap 让 me 生效
   // 鉴权态变更后失效全量 react-query 缓存：详情/列表的 allowupdate/allowdelete/计数由服务端按访问者下发，须随之刷新

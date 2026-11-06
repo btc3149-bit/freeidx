@@ -48,6 +48,14 @@ const KEY_POLICIES: Record<string, KeyPolicy> = {
 /** 前缀策略：user:{uid} = L0+L2/30s（禁 KV） */
 export function policyFor(key: string): KeyPolicy {
   if (key.startsWith('user:')) return { ttl: 30, layers: ['L0', 'L2'] };
+  /**
+   * 发信预算计数（modules/auth）：必须每次读到权威值。
+   * 走 L0 会让每个 isolate 各自持有 30s 前的旧计数，等价于把限流阈值放大数倍 —— 这类
+   * 「计数型」键只挂 L2（D1 bbs_cache），读侧虽会白填 L0，但 get 的前置判断已排除 L0 命中。
+   */
+  if (key.startsWith('send_ip:')) return { ttl: 3600, layers: ['L2'] };
+  // 验证码失败计数同属计数型键：必须每次读到 L2 权威值，否则各 isolate 各自 5 次可绕过枚举防护
+  if (key.startsWith('code_fail:')) return { ttl: 900, layers: ['L2'] };
   return KEY_POLICIES[key] ?? { ttl: 60, layers: ['L0', 'L2'] };
 }
 

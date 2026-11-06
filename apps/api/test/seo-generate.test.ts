@@ -14,7 +14,7 @@ import { generateThreadSeoHtml, deleteThreadSeoHtml, seoKey, enqueueSeoRename, s
 
 const now = () => Math.floor(Date.now() / 1000);
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', url: 'http://localhost', kw: '', desc: '',
+  runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
 });
@@ -37,7 +37,7 @@ function seoRules(): SqlRule[] {
     { test: /REPLACE INTO bbs_cache/, rows: [] },
     { test: /DELETE FROM bbs_cache/, rows: [] },
     // 真删前收集附件 R2 key（core/purge.attachKeysBy*）
-    { test: /SELECT filename FROM bbs_attach/, rows: [] },
+    { test: /SELECT aid,filename FROM bbs_attach/, rows: [] },
     { test: /SELECT tid FROM bbs_thread WHERE tid > \? ORDER BY tid ASC/, rows: [{ tid: 1 }, { tid: 2 }] },
     { test: /FROM bbs_forum ORDER BY/, rows: [FORUM1] },
     { test: /bbs_forum_access/, rows: [] },

@@ -15,7 +15,7 @@ const USER = {
   token_version: 7, password: 'x', salt: 's', email: 'a@b.c',
 };
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', url: 'http://localhost', kw: '', desc: '',
+  runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
 });
@@ -94,6 +94,17 @@ describe('双轨合并', () => {
     const token = await issueAccessToken(SECRET, 1, USER.token_version);
     const { env, calls } = envFor(rules());
     const res = await app.request('/api/bootstrap', { headers: { cookie: `at=${token}` } }, env as never);
+    const body = (await res.json()) as { data: { me: { uid: number } | null } };
+    expect(body.data.me?.uid).toBe(1);
+    expect(calls.some((c) => /REPLACE INTO bbs_session/.test(c.sql))).toBe(true);
+    expect(res.headers.get('set-cookie') ?? '').toMatch(/sid=[0-9a-f]{32}/);
+  });
+
+  it('sid 留存但 session 行已被 cron GC 删除：JWT 轨仍重建 session（在线状态不永久丢失）', async () => {
+    const token = await issueAccessToken(SECRET, 1, USER.token_version);
+    // 浏览器仍带 sid，但 bbs_session 行已不存在；旧实现按 !sid 判定会跳过重建
+    const { env, calls } = envFor(rules([{ test: /SELECT uid,last_date FROM bbs_session/, first: null }]));
+    const res = await app.request('/api/bootstrap', { headers: { cookie: `sid=stale; at=${token}` } }, env as never);
     const body = (await res.json()) as { data: { me: { uid: number } | null } };
     expect(body.data.me?.uid).toBe(1);
     expect(calls.some((c) => /REPLACE INTO bbs_session/.test(c.sql))).toBe(true);

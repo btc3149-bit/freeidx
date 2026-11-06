@@ -10,7 +10,7 @@
 import { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { CONTENT_LANG_NATIVE_NAMES, type ContentLang, type ForumNode, type ThreadListItem } from '@freeidx/shared';
-import { fmtDate } from '../lib/api';
+import { fmtDate, threadThumbSrc } from '../lib/api';
 import { Avatar } from './Avatar';
 import { Icon } from './icons';
 import { VBadge } from './VBadge';
@@ -18,8 +18,9 @@ import { Pill, TagBadge, cx } from './ui';
 import { Highlight } from './Highlight';
 import { useReadUnread } from '../hooks/useReadUnread';
 import { useAuth } from '../store/auth';
-import { useT } from '../lib/i18n';
+import { useForumName, useT } from '../lib/i18n';
 import { useLight } from '../store/theme';
+import { useTheme } from '../lib/theme/provider';
 
 export interface ThreadPageData {
   list: ThreadListItem[];
@@ -133,7 +134,9 @@ function TagRow({ th }: { th: ThreadListItem }) {
  */
 function ForumChip({ th, forum }: { th: ThreadListItem; forum?: ForumNode }) {
   const t = useT();
-  const name = forum?.name ?? t('forum_label');
+  /* 版块名多语言（0027）：按当前界面语言取词 */
+  const fname = useForumName();
+  const name = forum ? fname(forum) : t('forum_label');
   return (
     <Link to={`/forum/${th.fid}`} title={name} className="flex min-w-0 shrink-0 items-center gap-1 transition-colors hover:text-brand">
       {forum?.iconUrl ? (
@@ -147,7 +150,9 @@ function ForumChip({ th, forum }: { th: ThreadListItem; forum?: ForumNode }) {
 }
 
 /** 列表图片组（三列栅格、100px 高 cover、rounded、errpic 兜底）
- *  张数由 light.summaryPic 决定：3/6/9，超出换行 */
+ *  张数由 light.summaryPic 决定：3/6/9，超出换行。
+ *  地址经 threadThumbSrc 加 `?t=1` 取 400px 缩略图（缺失自动回退原图），
+ *  否则这里会为 100px 的格子下载数百 KB 的原图——实测单张 410KB，是整页最大资源。 */
 function ImageRow({ th, pic }: { th: ThreadListItem; pic: number }) {
   const t = useT();
   const list = (th.imageUrls ?? '').split(',').filter(Boolean).slice(0, pic);
@@ -158,9 +163,10 @@ function ImageRow({ th, pic }: { th: ThreadListItem; pic: number }) {
         <div key={src} className="w-1/3 p-1">
           <Link to={`/thread/${th.tid}`}>
             <img
-              src={src}
+              src={threadThumbSrc(src)}
               alt={t('click_view_detail')}
               loading="lazy"
+              decoding="async"
               className="block h-[100px] w-full rounded-[4px] object-cover"
               onError={(e) => {
                 e.currentTarget.src = '/theme-light/errpic.webp';
@@ -224,9 +230,15 @@ function Row({
 }) {
   const navigate = useNavigate();
   const t = useT();
+  /* 站内预取：hover/聚焦时提前下详情页 chunk（纯静态资源，不打后端，未点击零副作用）。
+     详情页 chunk 13.5KB(br)，预取后点击基本是 0 等待；触屏无 hover 自然退化为点击后加载。 */
+  const threadPage = useTheme()?.module.pages?.thread;
+  const prefetch = () => threadPage?.preload?.();
   return (
     <li
       className={cx('cursor-pointer border-b border-zh-line px-5 py-[0.7rem] last:border-b-0 hover:bg-zh-row-hover', className)}
+      onMouseEnter={prefetch}
+      onFocus={prefetch}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest('a,button,input,label')) return;
         navigate(`/thread/${th.tid}`);

@@ -26,6 +26,8 @@ const VersionUpdatePage = lazy(() =>
   import('./admin/pages/VersionUpdatePage').then((m) => ({ default: m.VersionUpdatePage })),
 );
 const SettingPage = lazy(() => import('./admin/pages/SettingPage').then((m) => ({ default: m.SettingPage })));
+/* 主题管理：启用/切换内置主题（清单由 lib/theme/registry 构建期自动发现，后端只存启用 id） */
+const ThemePage = lazy(() => import('./admin/pages/ThemePage').then((m) => ({ default: m.ThemePage })));
 const NavBarSettingPage = lazy(() => import('./admin/pages/NavBarSettingPage').then((m) => ({ default: m.NavBarSettingPage })));
 const EmailSettingPage = lazy(() => import('./admin/pages/EmailSettingPage').then((m) => ({ default: m.EmailSettingPage })));
 const ForumListPage = lazy(() => import('./admin/pages/ForumListPage').then((m) => ({ default: m.ForumListPage })));
@@ -35,13 +37,14 @@ const GroupListPage = lazy(() => import('./admin/pages/GroupListPage').then((m) 
 const GroupEditPage = lazy(() => import('./admin/pages/GroupEditPage').then((m) => ({ default: m.GroupEditPage })));
 const UserListPage = lazy(() => import('./admin/pages/UserListPage').then((m) => ({ default: m.UserListPage })));
 const UserEditPage = lazy(() => import('./admin/pages/UserEditPage').then((m) => ({ default: m.UserEditPage })));
+/* 小黑屋名单（0025）：生效中的封禁与解封入口，挂在「用户」分组的 USER_TABS 上 */
 const BannedPage = lazy(() => import('./admin/pages/BannedPage').then((m) => ({ default: m.BannedPage })));
 const OtherPage = lazy(() => import('./admin/pages/OtherPage').then((m) => ({ default: m.OtherPage })));
+/* 运行维护两个 tab（OTHER_TABS）：数据库孤儿行清理 / R2 未引用对象清理 */
 const DbMaintenancePage = lazy(() => import('./admin/pages/DbMaintenancePage').then((m) => ({ default: m.DbMaintenancePage })));
 const R2MaintenancePage = lazy(() => import('./admin/pages/R2MaintenancePage').then((m) => ({ default: m.R2MaintenancePage })));
 const ModlogPage = lazy(() => import('./admin/pages/ModlogPage').then((m) => ({ default: m.ModlogPage })));
 const ExtensionPage = lazy(() => import('./admin/pages/ExtensionPage').then((m) => ({ default: m.ExtensionPage })));
-const ThemePage = lazy(() => import('./admin/pages/ThemePage').then((m) => ({ default: m.ThemePage })));
 const ExtensionEditPage = lazy(() => import('./admin/pages/ExtensionEditPage').then((m) => ({ default: m.ExtensionEditPage })));
 const VipPlanPage = lazy(() => import('./admin/pages/VipPlanPage').then((m) => ({ default: m.VipPlanPage })));
 const OrderAdminPage = lazy(() => import('./admin/pages/OrderAdminPage').then((m) => ({ default: m.OrderAdminPage })));
@@ -75,6 +78,8 @@ function AdminRoutes() {
           <Route index element={<AdminIndexPage />} />
           <Route path="setting" element={<SettingPage />} />
           <Route path="setting/email" element={<EmailSettingPage />} />
+          {/* 主题管理（系统分组）：启用/切换内置主题，整页刷新后生效 */}
+          <Route path="themes" element={<ThemePage />} />
           {/* 导航栏设置（主页菜单下）：配置前台顶栏自定义导航项 */}
           <Route path="nav" element={<NavBarSettingPage />} />
           <Route path="forums" element={<ForumListPage />} />
@@ -84,17 +89,15 @@ function AdminRoutes() {
           <Route path="groups" element={<GroupListPage />} />
           <Route path="groups/:gid/edit" element={<GroupEditPage />} />
           <Route path="users" element={<UserListPage />} />
-          {/* 小黑屋：生效中的封禁名单与解封入口（0025） */}
-          <Route path="banned" element={<BannedPage />} />
           <Route path="users/new" element={<UserEditPage />} />
           <Route path="users/:uid/edit" element={<UserEditPage />} />
+          {/* 小黑屋：生效中的封禁名单与解封入口（对应 USER_TABS 的「黑名单」tab） */}
+          <Route path="banned" element={<BannedPage />} />
           <Route path="other" element={<OtherPage />} />
-          {/* 运行维护：数据库孤儿清理 / R2 未使用对象清理（第二批 tab，与「清理缓存」同菜单） */}
+          {/* 运行维护：数据库孤儿清理 / R2 未引用对象清理（对应 OTHER_TABS 的两个 tab） */}
           <Route path="maintenance/db" element={<DbMaintenancePage />} />
           <Route path="maintenance/r2" element={<R2MaintenancePage />} />
           <Route path="modlogs" element={<ModlogPage />} />
-          {/* 主题管理（系统分组，位于基础设置与插件中心之间） */}
-          <Route path="themes" element={<ThemePage />} />
           <Route path="extensions" element={<ExtensionPage />} />
           <Route path="extensions/:id" element={<ExtensionEditPage />} />
           {/* 支付管理三页（本项目新增，§15.4） */}

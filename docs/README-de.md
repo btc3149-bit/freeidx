@@ -1,4 +1,4 @@
-# btc3149-bit
+# 319解说
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · [한국어](README-ko.md) · [Français](README-fr.md) · **Deutsch** · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -78,6 +78,7 @@ User visits: forum.example.com
 ### 🔌 Erweiterbarkeit & Engineering
 
 - ✅ **Plugin-Mechanismus** - hook-/overwrite-Erweiterungspunkte + Frontend-Komponenten-Slots, hot-swappable über das Admin-Panel – Funktionalität erweitern, ohne den Kerncode anzufassen
+- ✅ **MCP-Server** - Stellt Foreninhalte KI-Clients (Claude Desktop, Cursor…) über MCP bereit; persönliche Zugriffstoken sind durch Rechte, Moderationsstatus und Bezahlschranke dreifach begrenzt, Schreibwerkzeuge bleiben standardmäßig aus
 - ✅ **Admin-Panel** - Seiteneinstellungen, Bereiche, Themen, Benutzer, Benutzergruppen, Cache – alles an einem Ort
 - ✅ **Mehrsprachigkeit** - Vereinfachtes/Traditionelles Chinesisch / Englisch / Japanisch / Koreanisch / Französisch / Deutsch / Spanisch / Russisch / Thai – insgesamt 10 Sprachen, skriptgeneriert + Pre-Commit-Validierung über die gesamte Pipeline, ganz ohne hartcodierte Texte
 - ✅ **Geplante Aufgaben** - Cron Triggers mit dreistufiger Planung (alle 5 Minuten / stündlicher Abgleich / täglich), automatisiert Session-Recycling, täglichen Statistik-Reset, Attachment-GC und den Abgleich verwaister Orders
@@ -185,12 +186,12 @@ Keine Route-Konfiguration nötig – `/api/*`, `/files/*` und die Seitenpfade li
 
 **Standard-Admin-Konto** (direkt nach dem ersten Login ändern!):
 
-- E-Mail: `332726547+btc3149-bit@users.noreply.github.com` / Passwort: `1`
+- E-Mail: `btc.520@163.com` / Passwort: `1`
 
 ## 📦 Repository-Struktur
 
 ```
-btc3149-bit/
+319解说/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

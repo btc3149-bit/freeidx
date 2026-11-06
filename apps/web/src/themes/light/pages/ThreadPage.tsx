@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { Code, PageSize, type FavoriterItem, type FrontKey, type HotPostsData, type PostItem, type ThreadDetail } from '@freeidx/shared';
@@ -19,9 +19,10 @@ import { NotFoundPage } from './NotFoundPage';
 import { Turnstile, turnstileDisabled } from '../../../components/Turnstile';
 import { Alert, Breadcrumb, Button, Card, Modal, TagBadge, cx } from '../../../components/ui';
 import { useReadUnread } from '../../../hooks/useReadUnread';
+import { LG_UP, useMediaQuery } from '../../../hooks/useMediaQuery';
 import { useAuth } from '../../../store/auth';
 import { useAuthModal } from '../../../store/authModal';
-import { useT, useGroupName } from '../../../lib/i18n';
+import { useT, useGroupName, useForumName, useLocalizedSetting } from '../../../lib/i18n';
 import { useLight } from '../../../store/theme';
 import type { UserProfile } from './UserPage';
 
@@ -178,6 +179,8 @@ function PrevNextCards({ prev, next }: { prev: { tid: number; subject: string } 
 export function ThreadPage() {
   const t = useT();
   const gn = useGroupName();
+  /* 版块名多语言（0027）：面包屑/版务弹窗的版块下拉按当前界面语言取词 */
+  const fname = useForumName();
   const light = useLight();
   const params = useParams();
   const navigate = useNavigate();
@@ -195,21 +198,24 @@ export function ThreadPage() {
   const [quickTs, setQuickTs] = useState('');
   const [quickNonce, setQuickNonce] = useState(0);
   const [quickErr, setQuickErr] = useState('');
-  /* 快速回复下拉（[默认语, ...# 分隔备选语]，首项 value=0 选中不动作） */
+  const { markRead } = useReadUnread();
+  const me = useAuth((s) => s.me);
+  /* 快速回复下拉（[默认语, ...# 分隔备选语]，首项 value=0 选中不动作）。
+   * 仅在登录态拉取（性能项）：回复框本身只对登录用户渲染，游客下载这份配置纯属浪费一个请求。 */
   const quickReplyMsg = useQuery({
     queryKey: ['quick-reply-message'],
     queryFn: fetchQuickReplyMessage,
     staleTime: 5 * 60_000,
+    enabled: Boolean(me),
   });
   const [quickSel, setQuickSel] = useState(0);
   const [opEditing, setOpEditing] = useState(false);
   const [opErr, setOpErr] = useState('');
-  const { markRead } = useReadUnread();
-  const me = useAuth((s) => s.me);
   const refresh = useAuth((s) => s.refresh);
   const forumlist = useAuth((s) => s.forumlist);
   const grouplist = useAuth((s) => s.grouplist);
-  const setting = useAuth((s) => s.setting);
+  /* 站点名称/介绍按当前界面语言取词（浏览器标题、分享文案等） */
+  const setting = useLocalizedSetting();
   /* 编辑器 chunk 空闲预热（C3）：把 400KB 下载移出首帧关键路径，又不让「高级回复」点击等下载。
      仅登录用户需要（游客没有回复框，预热纯属浪费流量）；me 由 bootstrap 异步到达，故依赖它。
      空闲回调不可用时退化为 2.5s 定时（仍晚于首屏），失败由 lazy 真正渲染时重试。 */
@@ -254,12 +260,16 @@ export function ThreadPage() {
   });
   /* 楼层「查看所有回复」弹层（show_all_reply）：按下入口楼层 pid 拉取其全部直接回复 */
   const [repliesPid, setRepliesPid] = useState<number | null>(null);
-  const replies = useQuery({
+  const replies = useInfiniteQuery({
     queryKey: ['post-replies', repliesPid],
-    queryFn: () => fetchPostReplies(repliesPid as number, 1),
+    queryFn: ({ pageParam }) => fetchPostReplies(repliesPid as number, pageParam),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.totalPage ? last.page + 1 : undefined),
     enabled: repliesPid !== null,
     staleTime: 30_000,
   });
+  const replyHead = replies.data?.pages[0]?.head;
+  const replyItems = replies.data?.pages.flatMap((pg) => pg.list) ?? [];
   /* 楼层点赞：toggle 后刷新主题详情与热门回复 */
   const postLike = useMutation({
     mutationFn: (p: PostItem) => togglePostLike(p.pid),
@@ -268,16 +278,7 @@ export function ThreadPage() {
       void qc.invalidateQueries({ queryKey: ['hot-posts', tid] });
     },
   });
-  /* 帖子内「热门回复」卡：仅第 1 页且开启时拉取 */
-  const hotPosts = useQuery({
-    queryKey: ['hot-posts', tid, light.hotLikePostLowCount, light.hotLikePostSize, light.hotLikeIsFirst],
-    queryFn: () =>
-      apiGet<HotPostsData>(
-        `/api/threads/${tid}/hot-posts?limit=${light.hotLikePostSize}&threshold=${light.hotLikePostLowCount}&includeFirst=${light.hotLikeIsFirst ? 1 : 0}`,
-      ),
-    enabled: light.hotLikePost && page === 1,
-    staleTime: 30_000,
-  });
+  /* 帖子内「热门回复」卡：见下方（依赖帖子详情，故定义在 q 之后） */
   /** 楼层点赞回调（登录态才渲染按钮；未登录不显示） */
   const onLikePost = light.postLike && me ? (p: PostItem) => postLike.mutate(p) : undefined;
   /* 首帖编辑的收费设置（allowsell 组才出现，初值取主题现值） */
@@ -377,6 +378,9 @@ export function ThreadPage() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ['thread', tid] });
+      void qc.invalidateQueries({ queryKey: ['my-likes'] });
+      void qc.invalidateQueries({ queryKey: ['favoriters', tid] });
+      void qc.invalidateQueries({ queryKey: ['my-favorites'] });
     },
   });
   const favorite = useMutation({
@@ -400,6 +404,9 @@ export function ThreadPage() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ['thread', tid] });
+      void qc.invalidateQueries({ queryKey: ['favoriters', tid] });
+      void qc.invalidateQueries({ queryKey: ['my-favorites'] });
+      void qc.invalidateQueries({ queryKey: ['my-likes'] });
     },
   });
   const onSocial = (m: typeof like | typeof favorite) => {
@@ -418,14 +425,33 @@ export function ThreadPage() {
   const th = d?.thread;
   /* 标签页标题：主题加载后覆盖 Layout 基线为「主题标题 - 站点名」 */
   useEffect(() => {
-    if (th?.subject) document.title = `${th.subject} - ${setting?.sitename || 'btc3149-bit'}`;
+    if (th?.subject) document.title = `${th.subject} - ${setting?.sitename || '319解说'}`;
   }, [th?.subject, setting?.sitename]);
   const perms = d?.perms;
+  /* 帖子内「热门回复」卡：仅第 1 页、功能开启且**帖子详情已到位**时拉取（性能项）。
+   * 原实现只要进页面就发，实测比 /api/threads/:tid 还早，白占首屏带宽与一个 D1 往返；
+   * 该卡片本身在正文下方，晚一拍出现不影响首屏。 */
+  const hotPosts = useQuery({
+    queryKey: ['hot-posts', tid, light.hotLikePostLowCount, light.hotLikePostSize, light.hotLikeIsFirst],
+    queryFn: () =>
+      apiGet<HotPostsData>(
+        `/api/threads/${tid}/hot-posts?limit=${light.hotLikePostSize}&threshold=${light.hotLikePostLowCount}&includeFirst=${light.hotLikeIsFirst ? 1 : 0}`,
+      ),
+    enabled: light.hotLikePost && page === 1 && Boolean(d),
+    staleTime: 30_000,
+  });
   const opUid = th?.uid ?? 0;
+  /**
+   * 作者卡是右栏 `hidden ... lg:block`（≥992px 才渲染）的粘性卡片，窄屏下**一个字段都用不到**。
+   * 移动端是论坛主要流量，此前每个帖子页都白打一次 /api/users/:uid（1 个 RTT + 一次 D1 读，
+   * 含 session/follow 计数 4 个查询）。这里按视口能力关掉，桌面端行为完全不变；
+   * 窗口拉宽时 matchMedia 会变更 → 查询自动补发。
+   */
+  const isWide = useMediaQuery(LG_UP);
   const author = useQuery({
     queryKey: ['user', opUid],
     queryFn: () => apiGet<UserProfile>(`/api/users/${opUid}`),
-    enabled: Boolean(th),
+    enabled: Boolean(th) && isWide,
   });
   const au = author.data;
 
@@ -621,6 +647,7 @@ export function ThreadPage() {
       setPayOpen(false);
       void qc.invalidateQueries({ queryKey: ['thread', tid] });
       void qc.invalidateQueries({ queryKey: ['threads'] });
+      void qc.invalidateQueries({ queryKey: ['thread-paylist', tid] });
       void refresh();
     } catch (e) {
       if (e instanceof ApiError && e.code === Code.NOT_LOGIN) {
@@ -724,7 +751,7 @@ export function ThreadPage() {
             <Breadcrumb
               items={[
                 { text: t('home'), to: '/' },
-                { text: d.forum.name, to: `/forum/${th.fid}` },
+                { text: fname({ name: d.forum.name, nameI18n: d.forum.nameI18n }), to: `/forum/${th.fid}` },
                 { text: th.subject, title: th.subject },
               ]}
               right={
@@ -1013,7 +1040,7 @@ export function ThreadPage() {
                           type: th.contentBuyType,
                           purchased: d.purchased,
                           tid,
-                          sitename: setting?.sitename || 'btc3149-bit',
+                          sitename: setting?.sitename || '319解说',
                           t,
                         }),
                       }}
@@ -1177,7 +1204,7 @@ export function ThreadPage() {
             >
               <ul className="m-0 list-none">
                 {hotPosts.data.list.map((p) => (
-                  <PostCard key={`hot-${p.pid}`} post={p} floor={0} onLike={onLikePost} likeBusy={postLike.isPending} onQuickAt={light.threadQuickAt ? onQuickAt : undefined} />
+                  <PostCard key={`hot-${p.pid}`} post={p} floor={0} onLike={onLikePost} likeBusy={postLike.isPending} onQuickAt={light.threadQuickAt && !advanced ? onQuickAt : undefined} />
                 ))}
               </ul>
             </Card>
@@ -1214,7 +1241,7 @@ export function ThreadPage() {
                         onShowReplies={light.showAllReply ? (pid) => setRepliesPid(pid) : undefined}
                         onLike={onLikePost}
                         likeBusy={postLike.isPending}
-                        onQuickAt={light.threadQuickAt ? onQuickAt : undefined}
+                        onQuickAt={light.threadQuickAt && !advanced ? onQuickAt : undefined}
                       />
                     ),
                   )}
@@ -1359,7 +1386,7 @@ export function ThreadPage() {
                 .filter((f) => f.fid !== th.fid)
                 .map((f) => (
                   <option key={f.fid} value={f.fid}>
-                    {f.name}
+                    {fname(f)}
                   </option>
                 ))}
             </select>
@@ -1528,36 +1555,36 @@ export function ThreadPage() {
         <Modal title={t('show_all_replies')} onClose={() => setRepliesPid(null)}>
           {replies.isLoading && <p className="py-4 text-center text-sm text-lt-grey">{t('loading')}</p>}
           {replies.isError && <p className="py-4 text-center text-sm text-destructive">{(replies.error as Error).message}</p>}
-          {replies.data && (
+          {replyHead && (
             <div className="max-h-[60vh] overflow-y-auto">
               {/* head：该楼层本身（#楼主） */}
               <div className="flex items-start gap-2.5 border-b border-zh-line pb-3">
-                <Link to={`/user/${replies.data.head.uid}`} aria-label={replies.data.head.username} onClick={() => setRepliesPid(null)} className="shrink-0">
-                  {replies.data.head.avatar_auto ? (
-                    <img src={replies.data.head.avatar_auto} alt={replies.data.head.username} className="size-10 rounded-full object-cover" />
+                <Link to={`/user/${replyHead.uid}`} aria-label={replyHead.username} onClick={() => setRepliesPid(null)} className="shrink-0">
+                  {replyHead.avatar_auto ? (
+                    <img src={replyHead.avatar_auto} alt={replyHead.username} className="size-10 rounded-full object-cover" />
                   ) : (
-                    <Avatar uid={replies.data.head.uid} avatar={replies.data.head.avatar} username={replies.data.head.username} size={3} />
+                    <Avatar uid={replyHead.uid} avatar={replyHead.avatar} username={replyHead.username} size={3} />
                   )}
                 </Link>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2 text-xs text-lt-grey">
                     <Link
-                      to={`/user/${replies.data.head.uid}`}
+                      to={`/user/${replyHead.uid}`}
                       className="font-bold text-lt-grey transition-colors hover:text-brand"
                       onClick={() => setRepliesPid(null)}
                     >
-                      {replies.data.head.username}
+                      {replyHead.username}
                     </Link>
                     <span>
-                      {fmtDate(replies.data.head.createDate)} · {t('landlord_label')}
+                      {fmtDate(replyHead.createDate)} · {t('landlord_label')}
                     </span>
                   </div>
-                  <div className="post-body mt-1 break-words text-sm leading-[1.7]" dangerouslySetInnerHTML={{ __html: replies.data.head.messageFmt }} />
+                  <div className="post-body mt-1 break-words text-sm leading-[1.7]" dangerouslySetInnerHTML={{ __html: replyHead.messageFmt }} />
                 </div>
               </div>
-              {replies.data.list.length ? (
+              {replyItems.length ? (
                 <ul className="m-0 list-none p-0">
-                  {replies.data.list.map((x) => (
+                  {replyItems.map((x) => (
                     <li key={x.pid} className="mt-3 flex items-start gap-2.5 border-b border-zh-line pb-3 last:border-b-0">
                       <Link to={`/user/${x.uid}`} aria-label={x.username} onClick={() => setRepliesPid(null)} className="shrink-0">
                         {x.avatar_auto ? (
@@ -1577,7 +1604,7 @@ export function ThreadPage() {
                               {x.username}
                             </Link>
                             <Icon name="reply" className="size-3 shrink-0" />
-                            <span className="truncate">{replies.data.head.username}</span>
+                            <span className="truncate">{replyHead.username}</span>
                           </span>
                           <span className="shrink-0">{fmtDate(x.createDate)}</span>
                         </div>
@@ -1588,6 +1615,19 @@ export function ThreadPage() {
                 </ul>
               ) : (
                 <p className="py-6 text-center text-sm text-lt-grey">{t('no_other_replies')}</p>
+              )}
+              {replies.hasNextPage && (
+                <div className="py-3 text-center">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={replies.isFetchingNextPage}
+                    loadingText={t('loading')}
+                    onClick={() => void replies.fetchNextPage()}
+                  >
+                    {t('load_more')}
+                  </Button>
+                </div>
               )}
             </div>
           )}

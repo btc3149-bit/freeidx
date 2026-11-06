@@ -2,6 +2,8 @@ export * from './codes';
 export * from './constants';
 export * from './ban';
 export * from './content-lang';
+export * from './forum-name';
+export * from './site-text';
 export * from './permissions';
 export * from './api-types';
 export * from './extensions';

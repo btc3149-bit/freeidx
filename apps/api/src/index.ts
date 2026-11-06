@@ -4,7 +4,7 @@
  */
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { AVAILABLE_LOCALES } from '@freeidx/shared';
+import { AVAILABLE_LOCALES, DEFAULT_LOCALE } from '@freeidx/shared';
 import type { Env } from './types/env';
 import { D1b } from './core/db';
 import { Cache } from './core/cache';
@@ -54,6 +54,7 @@ import { adminPaymentRoutes } from './modules/admin/payment';
 import { adminPointRoutes } from './modules/admin/points';
 import { adminNoticeRoutes } from './modules/admin/notices';
 import { adminVRoutes } from './modules/admin/v';
+import { adminMcpRoutes } from './modules/admin/mcp';
 import { registerCard } from './extensions/card';
 import { registerStripe } from './extensions/stripe';
 import { registerPaypal } from './extensions/paypal';
@@ -65,7 +66,7 @@ registerCard();
 registerStripe();
 registerPaypal();
 
-type AppEnv = { Bindings: Env; Variables: { db: D1b; cache: Cache; runlevel: number; t: ApiT } };
+type AppEnv = { Bindings: Env; Variables: { db: D1b; cache: Cache; runlevel: number; t: ApiT; lang?: string } };
 
 const app = new Hono<AppEnv>();
 
@@ -92,8 +93,10 @@ app.use(
       return allow.has(origin) ? origin : self;
     },
     credentials: true,
-    allowHeaders: ['Content-Type', 'X-CSRF-Token'],
-    exposeHeaders: ['X-Db-Queries-Warn', 'X-Edge-Cache'],
+    // Authorization：MCP 端点（/mcp）用 Bearer 令牌鉴权，浏览器型 MCP 客户端会带它做 preflight；
+    // Mcp-Protocol-Version / MCP-Protocol-Version：客户端协商协议版本用，不放行会被预检拦掉
+    allowHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'Mcp-Protocol-Version', 'MCP-Protocol-Version'],
+    exposeHeaders: ['X-Db-Queries-Warn', 'X-Edge-Cache', 'MCP-Protocol-Version'],
   }),
 );
 // 多域名收敛（canonical host）：页面导航落到非主域名时 301 到后台「站点网址」。
@@ -129,6 +132,8 @@ app.use('*', async (c, next) => {
         ? setting.adminLang || setting.lang
         : (cookieLangOf(c.req.header('cookie')) ?? setting.lang);
       c.set('t', createApiT(lang));
+      /* 供 runlevel 等后续中间件按同一口径取用（如站点关闭原因的多语言文案） */
+      c.set('lang', lang);
     } catch {
       c.set('t', t0);
     }
@@ -228,6 +233,8 @@ app.route('/', adminNoticeRoutes());
 app.route('/', adminCheckRoutes());
 // 加V认证后台：审核两列表 + 通过/拒绝 + 手动加V + 收费参数
 app.route('/', adminVRoutes());
+// MCP 服务（插件 id=mcp）后台：个人访问令牌 CRUD（明文只在创建响应出现一次）
+app.route('/', adminMcpRoutes());
 // SEO 核心保底（robots.txt 装配引擎，§16.4 不可停用）
 app.route('/', seoCoreRoutes());
 // 后续模块逐个挂载（forum/post/my/mod/attach/admin/kv）
@@ -235,14 +242,35 @@ app.route('/', seoCoreRoutes());
 app.onError(handleError);
 
 /**
- * SPA 壳的主题注入：把启用主题 id 写进 `window.__FI_THEME__`，前端在首屏渲染前读取，
- * 避免「先渲染默认主题再换肤」的闪烁，同时省掉一次 /api/theme/active 引导请求。
- * 注入失败（读壳失败/无 </head>）一律原样返回，主题引导会回落同名接口，不影响可用性。
+ * 中文字体子集路径（与 apps/web/src/styles/globals.css 的 @font-face 同源，改文件名须同步两处）。
+ * 仅中文界面预载：非中文界面根本不引用这套字体（见 globals.css 的 --font-app），预载会白下 454KB。
  */
-async function injectThemeId(res: Response, themeId: string): Promise<Response> {
+const CJK_FONT_URL = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v1.woff2';
+
+/**
+ * SPA 壳引导注入：在业务脚本之前写死「启用主题 id + 前台语言」，前端首帧即可用。
+ *
+ *  - `window.__FI_THEME__`：省掉一次 /api/theme/active 引导请求，也避免「先默认主题再换肤」的闪烁；
+ *  - `window.__FI_LANG__`：站点语言。前端据此**直接拉对应语言包**——此前首帧只能按
+ *    localStorage/DEFAULT_LOCALE(en-us) 猜，中文站点首访会先下 en-us 包、渲染一帧英文，
+ *    bootstrap 到达后再补下 zh-cn 包（实测同一页面下载两个词典 chunk）。
+ *  - `<html lang>`：同时落 CSS 用的语言标记，让 --font-app 从一开始就选中正确字体；
+ *    已存语言偏好（localStorage）优先级高于站点语言，这里一并对齐，避免先按站点语言下中文字体。
+ *  - 中文界面顺带预载字体：字体是首屏最大的单一资源，等 CSS 解析到 @font-face 才发起太晚。
+ *
+ * 注入失败（读壳失败/无 </head>）一律原样返回，前端会回落到「同名接口 + 默认主题 + 默认语言」。
+ */
+async function injectShell(res: Response, themeId: string, siteLang: string): Promise<Response> {
   try {
     const html = await res.text();
-    const script = `<script>window.__FI_THEME__=${JSON.stringify(themeId)}</script>`;
+    const script =
+      `<script>window.__FI_THEME__=${JSON.stringify(themeId)};` +
+      `window.__FI_LANG__=${JSON.stringify(siteLang)};` +
+      `document.documentElement.lang=${JSON.stringify(siteLang)};` +
+      `try{var p=localStorage.getItem("freeidx.lang");if(p)document.documentElement.lang=p}catch(e){}` +
+      `try{if(/^zh/.test(document.documentElement.lang)){var k=document.createElement("link");` +
+      `k.rel="preload";k.as="font";k.type="font/woff2";k.crossOrigin="";` +
+      `k.href=${JSON.stringify(CJK_FONT_URL)};document.head.appendChild(k)}}catch(e){}</script>`;
     // 优先注入 </head>（脚本在任何业务脚本之前求值）；无 head 时退化到 </body>；都没有则原样返回文本
     const out = html.includes('</head>')
       ? html.replace('</head>', `${script}</head>`)
@@ -269,6 +297,24 @@ app.notFound(async (c) => {
   if (p === '/api' || p === '/files' || p.startsWith('/api/') || p.startsWith('/files/')) {
     return handleNotFound(c);
   }
+  /**
+   * MCP 端点必须是 JSON：插件停用 / 方法不匹配（GET）/ 路径写错时，
+   * 若落进下面的 SPA 壳分支会返回 text/html 200，MCP 客户端只会报「响应无法解析」，
+   * 排查成本极高。这里固定回 404 JSON，并给出明确原因。
+   */
+  if (p === '/mcp' || p.startsWith('/mcp/')) {
+    return c.json(
+      {
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32601,
+          message: c.req.method === 'POST' ? 'MCP endpoint is disabled' : 'MCP endpoint accepts POST only',
+        },
+      },
+      404,
+    );
+  }
   const res = await c.env.ASSETS.fetch(c.req.raw);
   // 拿到的是 SPA 壳（而非真实文件）时，只有人类浏览器的干净路径才允许回退到壳：
   // 爬虫拿到壳页 200 会被当正文收录（§16.1），带扩展名的路径（/sitemap.xml、/xxx.htm）
@@ -278,7 +324,10 @@ app.notFound(async (c) => {
   if (!res.headers.get('content-type')?.includes('text/html')) return res;
   if (fileLike || bot) return handleNotFound(c);
   const themeId = await loadThemeId(c.get('cache'), c.get('db'));
-  return injectThemeId(res, themeId);
+  // 站点语言：非法/读取失败回落 DEFAULT_LOCALE（与改版前「无注入」时的行为一致）
+  const setting = await loadSetting(c.get('cache'), c.get('db')).catch(() => null);
+  const siteLang = setting && AVAILABLE_LOCALES.includes(setting.lang) ? setting.lang : DEFAULT_LOCALE;
+  return injectShell(res, themeId, siteLang);
 });
 
 export default {

@@ -45,6 +45,8 @@ export interface AdminForumRow {
   parent_fid: number;
   /** 绑定内容语言原始值（0024）：'' = 未绑定（子版块继承父版块，顶级版块不限制）；'none' = 显式不限制（仅子版块）；其余 = 强制该语言 */
   lang: string;
+  /** 版块名多语言（0027）：locale → 名称；服务端已把库里的 JSON 串解析成对象，{} = 未配置（前台回退 name） */
+  name_i18n: Record<string, string>;
   accesslist: Record<string, ForumAccessRow>;
 }
 
@@ -93,6 +95,8 @@ export interface ForumInput {
   parent_fid?: number;
   /** 绑定内容语言原始值（0024）：''/缺省 = 未绑定（子版块继承父版块，顶级版块不限制）；'none' = 显式不限制（仅子版块）；其余 = 强制该语言 */
   lang?: string;
+  /** 版块名多语言（0027）：locale → 名称；缺省 = 保持原值（PUT），{} = 清空（展示回退 name） */
+  name_i18n?: Record<string, string>;
   /** 仅在此键存在时整体替换权限矩阵；提交标量字段时不要带上，否则矩阵被清空 */
   access?: AccessInput[];
 }
@@ -435,6 +439,12 @@ export interface AdminSettingInput {
   desc?: string;
   runlevel?: number;
   runlevel_reason?: string;
+  /** 基础设置文案多语言（locale → 文本；未配置的语言回退主字段；空对象 = 未配置） */
+  sitename_i18n?: Record<string, string>;
+  brief_i18n?: Record<string, string>;
+  kw_i18n?: Record<string, string>;
+  desc_i18n?: Record<string, string>;
+  runlevel_reason_i18n?: Record<string, string>;
   user_create_on?: number;
   user_create_email_on?: number;
   user_resetpw_on?: number;
@@ -539,6 +549,41 @@ export interface AdSlotInput {
   sort: number;
   start_date: number;
   end_date: number;
+}
+
+/** MCP 访问令牌行（GET /api/admin/mcp/tokens）：只回前缀，明文永不回显 */
+export interface McpTokenRow {
+  id: number;
+  uid: number;
+  username: string;
+  name: string;
+  tokenPrefix: string;
+  scopes: string;
+  /** 0 = 永不过期 */
+  expireAt: number;
+  lastUsedAt: number;
+  revoked: boolean;
+  createDate: number;
+}
+
+/** POST /api/admin/mcp/tokens 输入；uid 缺省 = 当前管理员本人 */
+export interface McpTokenInput {
+  name: string;
+  scopes: string;
+  /** 0 = 永不过期 */
+  expireDays: number;
+  uid?: number;
+}
+
+/** POST 响应：token 是本项目里唯一一次明文下发，前端必须提示立即复制 */
+export interface McpTokenCreated {
+  id: number;
+  uid: number;
+  name: string;
+  scopes: string;
+  expireAt: number;
+  token: string;
+  endpoint: string;
 }
 
 /* ------------------------------------------------------------------ *

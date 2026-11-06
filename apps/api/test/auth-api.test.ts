@@ -4,8 +4,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/index';
-import { Code, md5Hex } from '@freeidx/shared';
+import { BanScope, Code } from '@freeidx/shared';
 import { l0Clear } from '../src/core/cache';
+import { md5Hex } from '@freeidx/shared';
 import { hashPassword } from '../src/core/auth';
 import { isEmail, isPassword, isUsername } from '../src/core/auth/validate';
 import { fakeD1Sql, fakeKv, type SqlRule } from './helpers/fake-d1';
@@ -21,7 +22,7 @@ const EMAIL_SECRET_TOKEN = await encryptSecret(JSON.stringify({ passes: ['smtp-p
 
 const settingJson = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
-    runlevel: 5, sitename: 'btc3149-bit', user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1, lang: 'zh-cn',
+    runlevel: 5, sitename: '319解说', user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1, lang: 'zh-cn',
     ...over,
   });
 
@@ -233,16 +234,18 @@ describe('POST /api/auth/email-code', () => {
     expect(json.code).toBe(Code.RATE_LIMITED);
   });
 
-  it('开关与存在性：user_create_email_on=0 → -1；找回密码场景已下线 → 参数错误且不落库；投递失败仍 → 0（旁路静默，码行已入库）', async () => {
+  it('开关与存在性：user_create_email_on=0 → -1；非注册场景（user_resetpw）拒绝 → 1001；投递失败仍 → 0（旁路静默，码行已入库）', async () => {
     const off = envFor([], settingJson(), { withEmail: true });
     expect((await post('/api/auth/email-code', { scene: 'user_create', email: 'n@e.com' }, off.env)).json.code).toBe(Code.NOT_LOGIN);
     // L0 是 isolate 级短存缓存：本用例用三份不同 setting 模拟三个站点，同一 isolate 内切换前须清空
     l0Clear();
-    // 找回密码走独立的 token 链接（/password-reset/request），本接口不再接受 user_resetpw：
-    // 否则 6 位码会被 confirm 当 token 接受，且「邮箱未注册 1003」成了防枚举的侧门。
+    /**
+     * 找回密码不复用本接口（走 /api/auth/password-reset/*）。必须锁死这条拒绝：
+     * 一旦 user_resetpw 被放回来，本接口发出的 6 位码就能被 password-reset/confirm 当 token 用，
+     * 绕过邮件链接重置任意账号密码；同时「邮箱未注册」的错误码也成了枚举侧门。
+     */
     const rp = envFor([], settingJson());
     expect((await post('/api/auth/email-code', { scene: 'user_resetpw', email: 'ghost@e.com' }, rp.env)).json.code).toBe(Code.VALIDATION_ERROR);
-    expect(rp.calls.some((c) => /INSERT INTO bbs_email_code/.test(c.sql))).toBe(false);
     l0Clear();
     // SMTP 建连失败被 provider 内部吞掉（failover 全败 → false），不阻塞请求：验证码行已落库、有效性不依赖投递结果
     const fail = envFor([], settingJson({ user_create_email_on: 1 }), { withEmail: true });
@@ -252,6 +255,50 @@ describe('POST /api/auth/email-code', () => {
 
 describe('POST /api/auth/login', () => {
   const salt = 'abcd1234';
+
+  /* 小黑屋（0025）禁登位：必须在签发会话之前拦住。放到 banGuard 里不够 ——
+     那时用户已拿到有效 sid/at，表现为「登录成功随即被踢」，且会话行会真实落库。 */
+  it('禁登位生效中 → BANNED，且不签发会话、不计登录统计', async () => {
+    const stored = await hashPassword(CLIENT_PW);
+    const user = {
+      uid: 1, gid: 2, password: stored, salt: '', token_version: 7, avatar: 0,
+      username: 'admin', email: 'a@b.com',
+      ban_scope: BanScope.LOGIN, ban_until: Math.floor(Date.now() / 1000) + 3600, ban_reason: '违规',
+    };
+    const { env, calls } = envFor([{ test: /FROM bbs_user WHERE email = \?/, first: user }]);
+    const { json } = await post('/api/auth/login', { account: 'a@b.com', password: CLIENT_PW }, env);
+    expect(json.code).toBe(Code.BANNED);
+    /* 错误信封把封禁位平铺在顶层（AppError.extra），前端据此展示到期与理由 */
+    expect((json as unknown as { banScope: number }).banScope).toBe(BanScope.LOGIN);
+    expect(calls.some((c) => /REPLACE INTO bbs_session/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /UPDATE bbs_user SET login_ip/.test(c.sql))).toBe(false);
+  });
+
+  it('禁登位已到期 → 正常登录（读路径惰性判定，不依赖 cron 清列）', async () => {
+    const stored = await hashPassword(CLIENT_PW);
+    const user = {
+      uid: 1, gid: 2, password: stored, salt: '', token_version: 7, avatar: 0,
+      username: 'admin', email: 'a@b.com',
+      ban_scope: BanScope.LOGIN, ban_until: Math.floor(Date.now() / 1000) - 60, ban_reason: '违规',
+    };
+    const { env, calls } = envFor([{ test: /FROM bbs_user WHERE email = \?/, first: user }]);
+    const { json } = await post('/api/auth/login', { account: 'a@b.com', password: CLIENT_PW }, env);
+    expect(json.code).toBe(Code.OK);
+    expect(calls.some((c) => /REPLACE INTO bbs_session/.test(c.sql))).toBe(true);
+  });
+
+  it('仅禁言/禁访（无禁登位）→ 允许登录，交由 banGuard 管后续读写', async () => {
+    const stored = await hashPassword(CLIENT_PW);
+    const user = {
+      uid: 1, gid: 2, password: stored, salt: '', token_version: 7, avatar: 0,
+      username: 'admin', email: 'a@b.com',
+      ban_scope: BanScope.MUTE | BanScope.READ, ban_until: Math.floor(Date.now() / 1000) + 3600, ban_reason: '刷屏',
+    };
+    const { env } = envFor([{ test: /FROM bbs_user WHERE email = \?/, first: user }]);
+    const { json } = await post('/api/auth/login', { account: 'a@b.com', password: CLIENT_PW }, env);
+    expect(json.code).toBe(Code.OK);
+  });
+
 
   it('新格式（PBKDF2）命中：更新 login_ip/logins + 双轨 Cookie', async () => {
     const stored = await hashPassword(CLIENT_PW);

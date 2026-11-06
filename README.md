@@ -1,4 +1,4 @@
-# btc3149-bit
+# 319解说
 
 **English · [简体中文](docs/README-cn.md) · [繁體中文](docs/README-zh-tw.md) · [日本語](docs/README-ja.md) · [한국어](docs/README-ko.md) · [Français](docs/README-fr.md) · [Deutsch](docs/README-de.md) · [Español](docs/README-es.md) · [Русский](docs/README-ru.md) · [ไทย](docs/README-th.md)**
 
@@ -80,6 +80,7 @@ User visits: forum.example.com
 ### 🔌 Extensibility & Engineering
 
 - ✅ **Plugin mechanism** - hook / overwrite extension points + frontend component slots, hot-swappable from the admin panel, extending functionality without touching core code
+- ✅ **MCP server** - Expose forum content to AI clients (Claude Desktop, Cursor…) over the Model Context Protocol; personal access tokens are gated by the owner's permissions, moderation state and paywall, and write tools stay off by default
 - ✅ **Admin panel** - Site settings, sections, topics, users, user groups, cache — all in one place
 - ✅ **Multi-language** - Simplified/Traditional Chinese / English / Japanese / Korean / French / German / Spanish / Russian / Thai — 10 languages in total, script-generated + full-pipeline pre-commit validation, eliminating hardcoded copy
 - ✅ **Scheduled tasks** - Cron Triggers three-tier scheduling (every 5 minutes / hourly reconciliation / daily), automating session recycling, daily stats reset, attachment GC, and orphaned order reconciliation
@@ -163,7 +164,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 Your fork ships with `.github/workflows/sync-upstream.yml`. Once Actions are enabled, it runs daily and requires **no extra secrets** beyond the two Cloudflare ones:
 
-- Fast-forwards your `main` (and tags) to the upstream `btc3149-bit/btc3149-bit` `main` — upstream is fetched anonymously since it's public;
+- Fast-forwards your `main` (and tags) to the upstream `btc3149-bit/freeidx` `main` — upstream is fetched anonymously since it's public;
 - Pushes the update and triggers the deploy workflow automatically, so your site follows upstream releases within a day;
 - Turns **red** in the Actions tab if your `main` has diverged from upstream (e.g. you committed to it directly) — resolve the conflict once, or keep private customizations on a separate branch and leave `main` untouched.
 
@@ -199,12 +200,12 @@ No Route configuration needed — `/api/*`, `/files/*`, and page paths are all i
 
 **Default admin account** (change it immediately after first login!):
 
-- Email: `332726547+btc3149-bit@users.noreply.github.com` / Password: `1`
+- Email: `btc.520@163.com` / Password: `1`
 
 ## 📦 Repository Structure
 
 ```
-btc3149-bit/
+319解说/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)
@@ -233,6 +234,9 @@ This project is licensed under the [GNU Affero General Public License v3.0 (AGPL
 
 - 个人微信
 
-![客服微信](docs/contact/qrmvp37fpo8324.png)
+[![QQ群](docs/contact/qrmvvo645u9026.jpg)](点击链接加入群聊【319解说】：https://qm.qq.com/q/TFjMYPbsSA)
 
-![个人微信](docs/contact/qrmvp37l9l4474.png)
+![作者微信](docs/contact/qrmvp37l9l4474.png)
+
+- **联系邮箱**：[btc.520@163.com](btc.520@163.com)
+- **Telegram 群**：[https://t.me/+kUCdWP_WLWZjMzQx](https://t.me/+kUCdWP_WLWZjMzQx)

@@ -1,4 +1,4 @@
-# btc3149-bit
+# 319解说
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · **日本語** · [한국어](README-ko.md) · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -78,6 +78,7 @@ User visits: forum.example.com
 ### 🔌 拡張性とエンジニアリング
 
 - ✅ **プラグイン機構** - hook / overwrite の拡張ポイント + フロントエンドのコンポーネントスロット。管理パネルからホットスワップでき、コアコードに手を加えずに機能を拡張
+- ✅ **MCP サーバー** - フォーラムの内容を MCP 経由で AI クライアント（Claude Desktop / Cursor など）に提供。個人アクセストークンは権限・審査状態・ペイウォールの三重制約下にあり、書き込み系ツールは既定で無効
 - ✅ **管理パネル** - サイト設定、セクション、トピック、ユーザー、ユーザーグループ、キャッシュを 1 か所で管理
 - ✅ **多言語対応** - 簡体字中国語 / 繁体字中国語 / 英語 / 日本語 / 韓国語 / フランス語 / ドイツ語 / スペイン語 / ロシア語 / タイ語の合計 10 言語。スクリプト生成 + pre-commit での全工程チェックにより、ハードコードされた文言を排除
 - ✅ **定時タスク** - Cron Triggers による 3 段階のスケジューリング（5 分ごと / 毎時突合 / 毎日）。セッションの回収、日次統計のリセット、添付ファイルの GC、孤立注文の突合を自動化
@@ -185,12 +186,12 @@ Route の設定は不要です。`/api/*`、`/files/*`、ページのパスは�
 
 **デフォルトの管理者アカウント**（初回ログイン後、必ずすぐに変更してください！）：
 
-- メールアドレス: `332726547+btc3149-bit@users.noreply.github.com` / パスワード: `1`
+- メールアドレス: `btc.520@163.com` / パスワード: `1`
 
 ## 📦 リポジトリ構成
 
 ```
-btc3149-bit/
+319解说/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

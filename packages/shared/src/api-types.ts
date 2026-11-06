@@ -4,6 +4,7 @@
  */
 import type { DocType, GroupId, Top, Digest, Closed } from './constants';
 import type { ContentLang } from './content-lang';
+import type { NameI18nMap } from './forum-name';
 import type { UserPerm } from './permissions';
 
 export interface ApiEnvelope {
@@ -33,6 +34,9 @@ export interface UserBrief {
 export interface ForumNode {
   fid: number;
   name: string;
+  /** 版块名多语言（0027）：locale → 名称；缺省/空 = 未配置，展示回退 name。
+   *  前台按当前界面语言取词（forumNameOf），切换语言即时生效，无需重新请求。 */
+  nameI18n?: Record<string, string>;
   rank: number;
   brief: string;
   threads: number;
@@ -59,9 +63,9 @@ export interface ForumNode {
 export interface ThreadListItem {
   tid: number;
   fid: number;
-  top: number & typeof Top[keyof typeof Top];
-  digest: number & typeof Digest[keyof typeof Digest];
-  closed: number & typeof Closed[keyof typeof Closed];
+  top: number & (typeof Top)[keyof typeof Top];
+  digest: number & (typeof Digest)[keyof typeof Digest];
+  closed: number & (typeof Closed)[keyof typeof Closed];
   uid: number;
   username: string;
   avatar: number;
@@ -193,12 +197,15 @@ export interface HotPostsData {
 export interface ModForumData {
   fid: number;
   name: string;
+  /** 版块名多语言（0027）：前台按当前界面语言取词，缺省回退 name */
+  nameI18n?: Record<string, string>;
   perms: { allowmod: boolean; allowdelete: boolean; allowmove: boolean };
 }
 
 export interface ThreadDetail {
   thread: ThreadListItem;
-  forum: { fid: number; name: string; moduids: string };
+  /** nameI18n：版块名多语言（0027），前台按当前界面语言取词 */
+  forum: { fid: number; name: string; moduids: string; nameI18n?: Record<string, string> };
   posts: Paged<PostItem>;
   /** 当前用户对本帖的可操作位（服务端计算，前端不做权限推断） */
   perms: {
@@ -236,31 +243,33 @@ export interface BootstrapPayload {
   setting: SiteSetting;
   forumlist: ForumNode[];
   grouplist: GroupRow[];
-  me: (UserBrief & {
-    email?: string;
-    threads: number;
-    posts: number;
-    credits: number;
-    /** 三币种：金币 / 人民币（分，显示时 ÷100） */
-    golds: number;
-    rmbs: number;
-    /** 社交计数（bbs_follow/bbs_favorite 实时 COUNT） */
-    followers: number;
-    following: number;
-    favorites: number;
-    /** 未读消息数（bbs_notice 实时 COUNT） */
-    unreadNotices: number;
-    /** 账号审核状态：1=正常 0=待审核 -1=未通过；非 1 时前台顶部提示且禁发帖回帖 */
-    ok: number;
-    /** see_check 组：可见他人未过审内容并在帖内现场审核 */
-    seeCheck: boolean;
-    /** 认证头衔（'0'=未认证；个人中心头像旁 V 标） */
-    v?: string;
-    /** 预设头像路径（avatar=0 且 avatar_auto 非 '0' 时下发） */
-    avatar_auto?: string;
-    /** 主页背景预设编号（'0'=默认 bg-0.png） */
-    bgimg?: string;
-  }) | null;
+  me:
+    | (UserBrief & {
+        email?: string;
+        threads: number;
+        posts: number;
+        credits: number;
+        /** 三币种：金币 / 人民币（分，显示时 ÷100） */
+        golds: number;
+        rmbs: number;
+        /** 社交计数（bbs_follow/bbs_favorite 实时 COUNT） */
+        followers: number;
+        following: number;
+        favorites: number;
+        /** 未读消息数（bbs_notice 实时 COUNT） */
+        unreadNotices: number;
+        /** 账号审核状态：1=正常 0=待审核 -1=未通过；非 1 时前台顶部提示且禁发帖回帖 */
+        ok: number;
+        /** see_check 组：可见他人未过审内容并在帖内现场审核 */
+        seeCheck: boolean;
+        /** 认证头衔（'0'=未认证；个人中心头像旁 V 标） */
+        v?: string;
+        /** 预设头像路径（avatar=0 且 avatar_auto 非 '0' 时下发） */
+        avatar_auto?: string;
+        /** 主页背景预设编号（'0'=默认 bg-0.png） */
+        bgimg?: string;
+      })
+    | null;
   /** 扩展插件经 bootstrap:contribute 注入（§12 契约 ⑦），如 ads 配置 */
   ext?: Record<string, unknown>;
   /** 站点运行数据：全站贴子总数 + 用户数，60s 读穿缓存 */
@@ -274,6 +283,17 @@ export interface SiteSetting {
   url: string;
   kw: string;
   desc: string;
+  /** 关闭原因（runlevel 0/1 时给访客的提示；缺省用内置文案） */
+  runlevelReason?: string;
+  /**
+   * 基础设置五个文本字段的多语言覆盖（kv setting 的 `*_i18n` 键，locale → 文本）。
+   * 前台按当前界面语言取词（localizedSetting），未配置的语言回退上面的主字段。
+   */
+  sitenameI18n?: NameI18nMap;
+  briefI18n?: NameI18nMap;
+  kwI18n?: NameI18nMap;
+  descI18n?: NameI18nMap;
+  runlevelReasonI18n?: NameI18nMap;
   userCreateOn: boolean;
   userCreateEmailOn: boolean;
   userResetpwOn: boolean;
@@ -319,8 +339,10 @@ export interface SiteSetting {
 
 /** 顶部导航栏单项（后台「导航栏设置」可配：链接到版块 /thread、文章或自定义地址） */
 export interface NavItem {
-  /** 显示名称 */
+  /** 显示名称（默认名称：未配置当前语言译文时回退它） */
   label: string;
+  /** 名称多语言：locale → 名称（与版块名 name_i18n 同一结构，前台按当前界面语言取词） */
+  labels?: Record<string, string>;
   /** 链接目标：站内路径（/forum/{fid}、/thread/{tid}、/new 等）或完整 URL */
   url: string;
   /** 排序（小在前） */

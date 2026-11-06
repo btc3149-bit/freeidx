@@ -180,12 +180,12 @@ export function AdminLayout() {
           open && 'ml-0',
         )}
       >
-        {/* 品牌区：居中 logo（有 logo_url 用图，否则用自绘 btc3149-bit 字标） */}
+        {/* 品牌区：居中 logo（有 logo_url 用图，否则用自绘 319解说 字标） */}
         <div className="flex h-[calc(3.5rem+1px)] shrink-0 items-center justify-center border-b border-line-soft px-3 text-center">
           {setting?.logo_url ? (
             <img src={String(setting.logo_url)} alt={setting.sitename} className="h-[36px] rounded-full" />
           ) : (
-            <img src={admWordmark} alt={setting?.sitename || 'btc3149-bit'} className="h-[30px] w-auto" />
+            <img src={admWordmark} alt={setting?.sitename || '319解说'} className="h-[30px] w-auto" />
           )}
         </div>
         <div className="adm-sidebar min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-2">
@@ -270,7 +270,7 @@ export function AdminLayout() {
         {/* 页脚：白底 + 上边发丝线 + 灰字 */}
         <footer className={cx('flex flex-wrap justify-between gap-2 border-t border-line bg-surface px-5 py-3 text-xs text-adm-footer-ink', shift)}>
           <span>
-            Powered by <b>btc3149-bit</b>
+            Powered by <b>319解说</b>
           </span>
           <span className="text-right">{setting?.sitename}</span>
         </footer>

@@ -1,15 +1,33 @@
 /** i18n Provider：前台语言 = 用户偏好（右上角切换器，localStorage 持久）> 站点 setting.lang，默认 en-us（§10.3） */
-import { createContext, useContext, useEffect, useMemo, useCallback, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useCallback,
+  useState,
+  type ReactNode,
+} from 'react';
 import { create } from 'zustand';
 import {
   AVAILABLE_LOCALES,
   builtinGroupName,
   createFrontTranslator,
   DEFAULT_LOCALE,
+  localizedSetting,
+  nameI18nOf,
+  type ForumNameMap,
   type FrontKey,
   type LocaleBundles,
+  type NameI18nMap,
+  type SiteSetting,
 } from '@freeidx/shared';
-import { EMPTY_BUNDLES, getLoadedBundle, loadLocaleBundle, subscribeBundles } from '@freeidx/shared/i18n/bundles';
+import {
+  EMPTY_BUNDLES,
+  getLoadedBundle,
+  loadLocaleBundle,
+  subscribeBundles,
+} from '@freeidx/shared/i18n/bundles';
 import { setUiLocale } from './api';
 import { useAuth } from '../store/auth';
 
@@ -29,13 +47,26 @@ function readLangPref(): string | null {
   }
 }
 
+declare global {
+  interface Window {
+    /** Worker 在 SPA 壳中注入的站点语言（见 apps/api 的 injectShell），首帧即可用 */
+    __FI_LANG__?: string;
+  }
+}
+
 /**
- * 首屏语言：bootstrap 到达前唯一可用的依据（用户偏好，非法值忽略 → 站点缺省 en-us）。
- * main.tsx 据此在渲染前预载词条，使首次渲染即拿到可用词典，不出现「先显示 key 再补文案」的闪烁。
+ * 首屏语言：bootstrap 到达前的依据，优先级 —— 用户偏好 > 壳注入的站点语言 > 默认 en-us。
+ *
+ * 第三个来源（`window.__FI_LANG__`）是性能关键：此前只能按 localStorage/默认值猜，
+ * 中文站点首访会先下 en-us 词条包、渲染一帧英文，等 bootstrap 到达后再补下 zh-cn 包
+ * （实测同一页面下两个词典 chunk）。拿到注入值后首帧即命中目标语言，少一个请求也不闪。
+ * main.tsx 据此在渲染前预载词条，使首次渲染就拿到可用词典，不出现「先显示 key 再补文案」。
  */
 export function initialLocale(): string {
   const pref = readLangPref();
-  return pref && AVAILABLE_LOCALES.includes(pref) ? pref : DEFAULT_LOCALE;
+  if (pref && AVAILABLE_LOCALES.includes(pref)) return pref;
+  const injected = typeof window === 'undefined' ? '' : (window.__FI_LANG__ ?? '');
+  return AVAILABLE_LOCALES.includes(injected) ? injected : DEFAULT_LOCALE;
 }
 
 interface LangPrefState {
@@ -57,7 +88,8 @@ export const useLangPref = create<LangPrefState>((set) => ({
     // API 消息语言（lib/api.ts 无需逐请求附加头）。清除偏好时同步过期 cookie，
     // 使 API 消息回到站点语言，与界面行为一致。
     try {
-      if (lang) document.cookie = `lang=${encodeURIComponent(lang)}; path=/; max-age=31536000; samesite=Lax`;
+      if (lang)
+        document.cookie = `lang=${encodeURIComponent(lang)}; path=/; max-age=31536000; samesite=Lax`;
       else document.cookie = 'lang=; path=/; max-age=0; samesite=Lax';
     } catch {
       /* 无 document 环境（SSR）忽略 */
@@ -125,4 +157,35 @@ export function useT(): T {
 export function useGroupName(): (gid: number, name: string) => string {
   const lang = useLang();
   return useCallback((gid: number, name: string) => builtinGroupName(gid, name, lang), [lang]);
+}
+
+/**
+ * 可配置名称取词（版块名 / 导航项名）：命中当前界面的译文则用之，否则回退主名称。
+ * 依赖 useLang → 语言切换后所有取词点同步重渲染，无需重新请求 bootstrap。
+ */
+export function useLocalizedName(): (base: string, map?: NameI18nMap | null) => string {
+  const lang = useLang();
+  return useCallback(
+    (base: string, map?: NameI18nMap | null) => nameI18nOf(base, map, lang),
+    [lang],
+  );
+}
+
+/**
+ * 前台设置视图：站点名称 / 站点介绍 / 关键词 / 站点描述 / 关闭原因 已按当前界面语言取词，
+ * 其余字段原样透传。消费方继续读 setting.sitename 等即可随语言切换即时更新。
+ */
+export function useLocalizedSetting(): SiteSetting | null {
+  const setting = useAuth((s) => s.setting);
+  const lang = useLang();
+  return useMemo(() => (setting ? localizedSetting(setting, lang) : setting), [setting, lang]);
+}
+
+/** 版块名取词：forum 节点自带 name + nameI18n（0027） */
+export function useForumName(): (f: { name: string; nameI18n?: ForumNameMap | null }) => string {
+  const localized = useLocalizedName();
+  return useCallback(
+    (f: { name: string; nameI18n?: ForumNameMap | null }) => localized(f.name, f.nameI18n),
+    [localized],
+  );
 }

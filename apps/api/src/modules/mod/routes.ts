@@ -9,10 +9,11 @@
 
  *  deleteuser 归 T3-2（不走 forumAccessMod）；mod:executed 事件（契约②）逐条发射。
  */
-import { Hono } from 'hono';
-import { Code, GroupId, type ModThreadsReq } from '@freeidx/shared';
+import { Hono, type Context } from 'hono';
+import { Code, GroupId, normForumNameI18n, type ModThreadsReq } from '@freeidx/shared';
 import { AppError, ok } from '../../middleware/envelope';
-import type { Stmt } from '../../core/db';
+import type { D1b, Stmt } from '../../core/db';
+import type { Cache } from '../../core/cache';
 import { forumAccessMod } from '../../core/access';
 import { forumLangOf, loadForumlist, loadGrouplist, loadSetting, loadViewer, makeAccessCtx, type ForumRow } from '../../core/loaders';
 import { CheckStatus, hasSeeCheck } from '../../core/check';
@@ -20,9 +21,10 @@ import { attachKeysByTid, attachKeysForUserPurge, purgeR2Objects, threadPurgeStm
 import { getExtensions } from '../../core/extensions';
 import { revokeAffectedUids, revokeForPostDelete, settleDigestChanges, threadRevokeEntries, upgradeGroupsByCredits, type RevokeEntry } from '../../core/points';
 import { NoticeType, noticeModHtml, noticeSendMany } from '../../core/notice';
-import { invalidateThreadSeo } from '../seo/generate';
-import { core, getExecCtx, intParam, patchRuntime, readJson, type ReadEnv } from '../shared';
+import { deleteThreadSeoHtml } from '../seo/generate';
+import { core, getExecCtx, intParam, patchRuntime, type ReadEnv } from '../shared';
 
+type Ctx = Context<ReadEnv>;
 const now = () => Math.floor(Date.now() / 1000);
 
 interface ModThread {
@@ -48,6 +50,26 @@ interface ModlogRow {
   action: string;
 }
 
+async function readJson<T>(c: Ctx): Promise<T> {
+  const t = c.get('t');
+  try {
+    return await c.req.json<T>();
+  } catch {
+    throw new AppError(Code.VALIDATION_ERROR, t('common.invalidJson'));
+  }
+}
+
+/** SEO HTML 失效旁路：未绑 R2 跳过（零额外查询），有上下文 waitUntil（请求期 CPU≈0） */
+async function invalidateSeo(core: { db: D1b; cache: Cache }, c: Ctx, tids: number[]): Promise<void> {
+  const files = c.env.FILES as unknown as { put?: unknown } | undefined;
+  if (!files || typeof files.put !== 'function' || !tids.length) return;
+  const deps = { db: core.db, cache: core.cache, env: c.env };
+  const work = Promise.all(tids.map((tid) => deleteThreadSeoHtml(deps, tid).catch(() => undefined)));
+  const ex = await getExecCtx(c);
+  if (ex?.waitUntil) ex.waitUntil(work);
+  else await work;
+}
+
 export function modRoutes(): Hono<ReadEnv> {
   const app = new Hono<ReadEnv>();
 
@@ -69,6 +91,8 @@ export function modRoutes(): Hono<ReadEnv> {
       data: {
         fid,
         name: forum.name,
+        /* 版块名多语言（0027）：整份 map 下发，前台按当前界面语言取词 */
+        nameI18n: normForumNameI18n(forum.name_i18n),
         perms: {
           allowmod: forumAccessMod(ctx, fid, 'allowtop'),
           allowdelete: forumAccessMod(ctx, fid, 'allowdelete'),
@@ -138,16 +162,10 @@ export function modRoutes(): Hono<ReadEnv> {
       throw new AppError(Code.NOT_FOUND, t('common.forumNotFound'));
     }
 
-    /* 移动目标版块的生效语言（含父版块继承）：与发帖强制 / 前台编辑首帖 / 后台编辑主题同一口径；
-       整批同目标，循环外算一次 */
-    const moveLang = action === 'move' ? forumLangOf(forumlist, newFid) : '';
-
     for (const thread of threads.results) {
       const tid = Number(thread.tid);
       const fid = Number(thread.fid);
       if (!forumAccessMod(ctx, fid, perm)) continue;
-      // 跨版移动还需具备【目标版块】版务权限，防止把主题移入无权管理的版块（含私密版块）
-      if (action === 'move' && !forumAccessMod(ctx, newFid, perm)) continue;
 
       if (action === 'top') {
         const top = value;
@@ -223,9 +241,14 @@ export function modRoutes(): Hono<ReadEnv> {
           db.prepare('UPDATE bbs_forum SET threads = threads - 1 WHERE fid = ?').bind(fid) as unknown as Stmt,
           db.prepare('UPDATE bbs_thread_top SET fid = ? WHERE tid = ?').bind(newFid, tid) as unknown as Stmt,
         );
-        /* 移入绑定版块：主题语言对齐到绑定值（移出保持原值，不反向猜测） */
-        if (moveLang) {
-          stmts.push(db.prepare('UPDATE bbs_thread SET lang = ? WHERE tid = ?').bind(moveLang, tid) as unknown as Stmt);
+        /* 0024 强一致：目标版块绑定内容语言时，移入的主题必须对齐该语言，
+         * 否则版块内会残留不匹配语言的内容，且发帖侧锁定语言与列表过滤口径对不上。
+         * 生效语言走 forumLangOf（含二级版块继承父版块、哨兵解除继承的解析）。 */
+        const targetLang = forumLangOf(forumlist, newFid);
+        if (targetLang) {
+          stmts.push(
+            db.prepare('UPDATE bbs_thread SET lang = ? WHERE tid = ?').bind(targetLang, tid) as unknown as Stmt,
+          );
         }
         touchedForumlist = true;
 
@@ -280,7 +303,7 @@ export function modRoutes(): Hono<ReadEnv> {
 
 
     if (purgedTids.length) await patchRuntime(cache, { threads: -purgedTids.length });
-    if (seoTids.length) await invalidateThreadSeo({ db, cache }, c, seoTids);
+    if (seoTids.length) await invalidateSeo({ db, cache }, c, seoTids);
 
     const rt = await getExtensions(cache, db, undefined, { preloadConfigs: false });
     for (const e of executed) await rt.bus.emit('mod:executed', { uid: v.uid, tid: e.tid, action: e.action });
@@ -338,7 +361,7 @@ export function modRoutes(): Hono<ReadEnv> {
 
     if (tids.length) await patchRuntime(cache, { threads: -tids.length });
     await patchRuntime(cache, { users: -1 });
-    await invalidateThreadSeo({ db, cache }, c, tids);
+    await invalidateSeo({ db, cache }, c, tids);
 
     // R2 对象尽力删除（失败不影响一致性）：附件（本人上传 + 本人主题内他人上传）+ 头像（键可由 uid 推导）
     const ex = await getExecCtx(c);

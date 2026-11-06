@@ -1,4 +1,4 @@
-# btc3149-bit
+# 319解说
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · [한국어](README-ko.md) · **Français** · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -78,6 +78,7 @@ User visits: forum.example.com
 ### 🔌 Extensibilité et ingénierie
 
 - ✅ **Mécanisme de plugins** - Points d'extension hook / overwrite + emplacements de composants frontend, remplaçables à chaud depuis le panneau d'administration, pour étendre les fonctionnalités sans toucher au code central
+- ✅ **Serveur MCP** - Expose le contenu du forum aux clients IA (Claude Desktop, Cursor…) via MCP ; les jetons d'accès personnels sont encadrés par les droits, l'état de modération et le paywall, et les outils d'écriture restent désactivés par défaut
 - ✅ **Panneau d'administration** - Paramètres du site, sections, sujets, utilisateurs, groupes d'utilisateurs, cache — tout au même endroit
 - ✅ **Multilingue** - Chinois simplifié/traditionnel / anglais / japonais / coréen / français / allemand / espagnol / russe / thaï — 10 langues au total, génération par scripts + validation sur l'ensemble du pipeline en pré-commit, éliminant les textes codés en dur
 - ✅ **Tâches planifiées** - Ordonnancement Cron Triggers à trois paliers (toutes les 5 minutes / réconciliation horaire / quotidien), automatisant le recyclage des sessions, la réinitialisation quotidienne des statistiques, le GC des pièces jointes et la réconciliation des commandes orphelines
@@ -185,12 +186,12 @@ Aucune configuration de Route nécessaire — `/api/*`, `/files/*` et les chemin
 
 **Compte administrateur par défaut** (changez-le immédiatement après la première connexion !) :
 
-- E-mail : `332726547+btc3149-bit@users.noreply.github.com` / Mot de passe : `1`
+- E-mail : `btc.520@163.com` / Mot de passe : `1`
 
 ## 📦 Structure du dépôt
 
 ```
-btc3149-bit/
+319解说/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { CONTENT_LANG_NATIVE_NAMES, CONTENT_LANGS, detectContentLang, type ContentLang } from '@freeidx/shared';
 import { BanScope, effectiveBanScope } from '@freeidx/shared';
 import { createThread } from '../../../lib/api';
+import { nonNegInt } from '../../../lib/params';
 import { Composer, type ComposerSubmit } from '../../../components/Composer';
 import { Alert, Button, Card, CardTabs, Modal, TagBadge, cx, inputCls } from '../../../components/ui';
 import { Icon } from '../../../components/icons';
@@ -11,13 +12,15 @@ import { useAuth } from '../../../store/auth';
 import { useContentLangMode } from '../../../store/contentLang';
 import { useLight } from '../../../store/theme';
 import { useAuthModal } from '../../../store/authModal';
-import { useT } from '../../../lib/i18n';
+import { useForumName, useLocalizedSetting, useT } from '../../../lib/i18n';
 
 /** 发帖页（§4.4，/new 或 /forum/:fid/new）：
  *  两栏 —— 左主表单卡（8/12 栅格：版块/标题 + Composer + 标签选择 + 收费设置）、
  *  右功能卡（4/12 栅格，tabs 功能/附件，sticky）。提交仍走 Composer 内按钮 → POST /api/threads（doctype=0）。 */
 export function ComposePage() {
   const t = useT();
+  /* 版块名多语言（0027）：按当前界面语言取词 */
+  const fname = useForumName();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const routeParams = useParams();
@@ -26,7 +29,8 @@ export function ComposePage() {
   const grouplist = useAuth((s) => s.grouplist);
   const me = useAuth((s) => s.me);
   const loaded = useAuth((s) => s.loaded);
-  const setting = useAuth((s) => s.setting);
+  /* 站点介绍等基础设置按当前界面语言取词 */
+  const setting = useLocalizedSetting();
   const openAuth = useAuthModal((s) => s.openAuth);
   const refresh = useAuth((s) => s.refresh);
   const light = useLight();
@@ -36,7 +40,7 @@ export function ComposePage() {
 
   // 冷加载 /new 时 forumlist 尚未就绪，useState 初值会永远停在 0 ⇒ 目标版块改为派生，用户手选才覆盖
   const [pickedFid, setPickedFid] = useState(0);
-  const fid = pickedFid || Number(routeParams.fid ?? search.get('fid') ?? forumlist[0]?.fid ?? 0);
+  const fid = pickedFid || nonNegInt(routeParams.fid ?? search.get('fid'), forumlist[0]?.fid ?? 0);
   /* 当前选中版块（分类弹窗与触发器共用） */
   const currentForum = forumlist.find((f) => f.fid === fid);
   /* 版块生效内容语言（0024，自身绑定或继承父版块）：非空时发帖语言锁定为该语言，服务端同样强制 */
@@ -168,7 +172,7 @@ export function ComposePage() {
               ) : (
                 <Icon name="folder" className="size-4 shrink-0 text-zh-grey" />
               )}
-              <span className="max-w-[10rem] truncate">{currentForum?.name ?? t('select_category')}</span>
+              <span className="max-w-[10rem] truncate">{currentForum ? fname(currentForum) : t('select_category')}</span>
               <Icon name="chevron_down" className="size-4 shrink-0 text-zh-grey" />
             </button>
             <input
@@ -383,7 +387,7 @@ export function ComposePage() {
                     <Icon name="folder" className="size-5 text-zh-grey" />
                   </span>
                 )}
-                <span className="mt-1.5 whitespace-nowrap text-sm text-foreground">{f.name}</span>
+                <span className="mt-1.5 whitespace-nowrap text-sm text-foreground">{fname(f)}</span>
               </label>
             ))}
           </div>

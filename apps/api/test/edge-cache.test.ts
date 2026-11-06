@@ -13,7 +13,7 @@ import { API_TTL } from '../src/core/cache/edge';
 import { fakeAssets, fakeCaches, fakeD1Sql, fakeKv, fakeR2, type SqlRule } from './helpers/fake-d1';
 
 const SETTING = JSON.stringify({
-  runlevel: 5, sitename: 'btc3149-bit', brief: 'b', url: 'http://localhost', kw: '', desc: '',
+  runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
 });
@@ -182,8 +182,9 @@ describe('边缘缓存：游客只读接口', () => {
       ['/api/threads/7/hot-posts', 60],
       ['/api/insert-codes', 60],
       ['/api/quick-reply-message', 300],
-      ['/api/vip/plans', 600],
-      ['/api/payment-providers', 600],
+      // 价格/通道后台可变且无全网络 purge：TTL 压到 30s，避免旧价展示与已停用通道
+      ['/api/vip/plans', 30],
+      ['/api/payment-providers', 30],
       ['/api/checkin', 30],
     ];
     for (const [path, ttl] of required) expect(ttlOf(path), `${path} 的边缘 TTL`).toBe(ttl);
@@ -231,7 +232,7 @@ describe('边缘缓存：robots.txt / llms.txt（同值文档，AI 爬虫高频�
   it('llms.txt 首次落缓存，二次 HIT 不再查精华主题', async () => {
     const first = await hit('/llms.txt');
     expect(first.res.status).toBe(200);
-    expect(await first.res.text()).toContain('# btc3149-bit');
+    expect(await first.res.text()).toContain('# 319解说');
     expect(first.source.calls.some((c) => /FROM bbs_thread WHERE digest > 0/.test(c.sql))).toBe(true);
 
     const second = await hit('/llms.txt', {}, envFor());

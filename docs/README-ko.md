@@ -1,4 +1,4 @@
-# btc3149-bit
+# 319解说
 
 [English](../README.md) · [简体中文](README-cn.md) · [繁體中文](README-zh-tw.md) · [日本語](README-ja.md) · **한국어** · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -78,6 +78,7 @@ User visits: forum.example.com
 ### 🔌 확장성 및 엔지니어링
 
 - ✅ **플러그인 메커니즘** - hook / overwrite 확장 포인트 + 프런트엔드 컴포넌트 슬롯, 관리자 패널에서 핫스왑 가능, 핵심 코드를 건드리지 않고 기능 확장
+- ✅ **MCP 서버** - 포럼 콘텐츠를 MCP로 AI 클라이언트(Claude Desktop, Cursor 등)에 제공. 개인 액세스 토큰은 권한·심사 상태·유료 장벽의 삼중 제약을 받으며 쓰기 도구는 기본적으로 꺼져 있음
 - ✅ **관리자 패널** - 사이트 설정, 섹션, 토픽, 사용자, 사용자 그룹, 캐시까지 모두 한곳에서
 - ✅ **다국어** - 간체/번체 중국어 / 영어 / 일본어 / 한국어 / 프랑스어 / 독일어 / 스페인어 / 러시아어 / 태국어 — 총 10개 언어, 스크립트 자동 생성 + 전 파이프라인 pre-commit 검증으로 하드코딩된 문구 제거
 - ✅ **예약 작업** - Cron Triggers 3계층 스케줄링 (매 5분 / 매시간 정산 / 매일), 세션 회수, 일별 통계 리셋, 첨부파일 GC, 고아 주문 정산을 자동화
@@ -185,12 +186,12 @@ Route 설정은 필요 없습니다 — `/api/*`, `/files/*`, 페이지 경로�
 
 **기본 관리자 계정** (첫 로그인 직후 반드시 변경하세요!):
 
-- 이메일: `332726547+btc3149-bit@users.noreply.github.com` / 비밀번호: `1`
+- 이메일: `btc.520@163.com` / 비밀번호: `1`
 
 ## 📦 저장소 구조
 
 ```
-btc3149-bit/
+319解说/
 ├── apps/
 │   ├── web/               # Frontend React 19 SPA → Worker Static Assets
 │   └── api/               # Backend Hono Worker (includes migrations/)

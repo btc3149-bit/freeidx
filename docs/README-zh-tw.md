@@ -1,4 +1,4 @@
-# btc3149-bit
+# 319解说
 
 [English](../README.md) · [简体中文](README-cn.md) · **繁體中文** · [日本語](README-ja.md) · [한국어](README-ko.md) · [Français](README-fr.md) · [Deutsch](README-de.md) · [Español](README-es.md) · [Русский](README-ru.md) · [ไทย](README-th.md)
 
@@ -78,6 +78,7 @@
 ### 🔌 擴充與工程化
 
 - ✅ **外掛機制** - hook / overwrite 擴充點 + 前端元件插槽，後台熱插拔，不改核心程式碼即可增強功能
+- ✅ **MCP 服務** - 將論壇內容以 MCP 協定提供給 AI 用戶端（Claude Desktop / Cursor 等），個人存取權杖受限於權限、審核狀態與付費牆三重約束，寫入類工具預設關閉
 - ✅ **管理後台** - 網站設定、看板、主題、使用者、使用者群組、快取一站式管理
 - ✅ **多語言** - 中文簡繁 / 英 / 日 / 韓 / 法 / 德 / 西 / 俄 / 泰 共 10 種語言，腳本化產生 + pre-commit 全鏈路驗證，杜絕硬編碼文案
 - ✅ **排程任務** - Cron Triggers 三檔調度（每 5 分鐘 / 每小時對帳 / 每日凌晨），session 回收、日統計歸零、附件 GC、掉單對帳全自動
@@ -185,12 +186,12 @@ Workers & Pages → Create → **Continue with GitHub** 也能部署，但需要
 
 **預設管理員帳號**（首次登入後請立即修改！）：
 
-- 電子郵件: `332726547+btc3149-bit@users.noreply.github.com` / 密碼: `1`
+- 電子郵件: `btc.520@163.com` / 密碼: `1`
 
 ## 📦 儲存庫結構
 
 ```
-btc3149-bit/
+319解说/
 ├── apps/
 │   ├── web/               # 前端 React 19 SPA → Worker Static Assets
 │   └── api/               # 後端 Hono Worker（含 migrations/）

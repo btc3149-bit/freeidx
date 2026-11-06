@@ -9,13 +9,13 @@
  */
 
 const RAW_BASE = (
-  import.meta.env.VITE_GITHUB_RELEASES_RAW_BASE ?? 'https://raw.githubusercontent.com/btc3149-bit/btc3149-bit/main'
+  import.meta.env.VITE_GITHUB_RELEASES_RAW_BASE ?? 'https://raw.githubusercontent.com/btc3149-bit/freeidx/main'
 ).replace(/\/+$/, '');
 
 /** 上游仓库（「数据来源」「打开 Release」「查看详细变更」等外链均基于它） */
 export const REPO_URL = (() => {
   const match = RAW_BASE.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\//);
-  return match ? `https://github.com/${match[1]}/${match[2]}` : 'https://github.com/btc3149-bit/btc3149-bit';
+  return match ? `https://github.com/${match[1]}/${match[2]}` : 'https://github.com/btc3149-bit/freeidx';
 })();
 
 const RELEASE_INDEX_PATH = '.github/releases/version.json';
