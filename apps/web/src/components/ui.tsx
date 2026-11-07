@@ -205,7 +205,7 @@ export function TagBadge({ name, style = 'primary', to, className }: { name: str
 export function Pill({ children, className, jb, title }: { children: ReactNode; className?: string; jb?: string; title?: string }) {
   return (
     <span
-      className={cx('inline-flex shrink-0 items-center rounded-[3px] px-1.5 py-0.5 text-[11px] leading-none text-white', jb, className)}
+      className={cx('inline-flex shrink-0 items-center rounded-[3px] px-1.5 py-0.5 text-[12px] leading-none text-white', jb, className)}
       title={title}
     >
       {children}
@@ -312,8 +312,9 @@ function SideNav({ items, ariaLabel, divider = true }: { items: SideNavItem[]; a
   const [collapsed, toggle] = useSideNavCollapsed();
   const itemCls = (active: boolean) =>
     cx(
-      'flex h-10 items-center gap-2.5 rounded-[5px] px-3 text-sm leading-6 transition-colors outline-none',
-      collapsed && 'justify-center gap-0 px-0',
+      /* min-h + py：单行仍为 40px；多语言长名称换行后自然撑高，不截断 */
+      'flex min-h-10 items-center gap-2.5 rounded-[5px] px-3 py-2 text-base leading-6 transition-colors outline-none',
+      collapsed && 'justify-center gap-0 px-0 py-0',
       active ? 'bg-[rgba(41,151,247,0.1)] font-medium text-[#2997f7]' : 'text-foreground hover:bg-lt-hover',
     );
   const toggleLabel = collapsed ? t('side_nav_expand') : t('side_nav_collapse');
@@ -323,11 +324,12 @@ function SideNav({ items, ariaLabel, divider = true }: { items: SideNavItem[]; a
   const forumLink = (f: ForumNode) => (
     <Link to={`/forum/${f.fid}`} title={fname(f)} className={itemCls(false)}>
       {f.iconUrl ? (
-        <img src={f.iconUrl} alt="" className="size-[24px] shrink-0 rounded-full object-contain" />
+        <img src={f.iconUrl} alt="" className="size-[26px] shrink-0 rounded-full object-contain" />
       ) : (
-        <Icon name="folder" className="size-[20px] shrink-0 text-zh-grey" aria-hidden="true" />
+        <Icon name="folder" className="size-[26px] shrink-0 text-zh-grey" aria-hidden="true" />
       )}
-      {!collapsed && <span className="truncate">{fname(f)}</span>}
+      {/* 版块名多语言：俄语/德语等较长时换行显示，break-words 兜底超长单词 */}
+      {!collapsed && <span className="min-w-0 flex-1 break-words">{fname(f)}</span>}
     </Link>
   );
   return (
@@ -350,7 +352,7 @@ function SideNav({ items, ariaLabel, divider = true }: { items: SideNavItem[]; a
                   className={itemCls(!!it.active)}
                 >
                   <Icon name={it.icon} className={cx('size-[20px] shrink-0', it.active ? 'text-brand' : 'text-zh-grey')} />
-                  {!collapsed && <span className="truncate">{it.label}</span>}
+                  {!collapsed && <span className="min-w-0 flex-1 break-words">{it.label}</span>}
                 </Link>
               </li>
             ))}
@@ -494,7 +496,7 @@ export function GuestCard() {
     <SidePanel>
       <div className="flex items-stretch gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
+          <div className="flex items-center gap-2 text-[16px] font-bold text-foreground">
             <span className="h-4 w-[3px] shrink-0 rounded bg-brand" /> {t('guest_hello')}
           </div>
           <div className="mt-1.5 text-xs text-muted-foreground">{t('guest_login_tip')}</div>
@@ -580,14 +582,14 @@ export function UserSideCard(props: {
             {me.username}
           </Link>
           {props.groupName && (
-            <span className="mt-1.5 inline-flex rounded bg-brand px-1.5 py-0.5 text-[10px] leading-none text-white">
+            <span className="mt-1.5 inline-flex rounded bg-brand px-1.5 py-0.5 text-[11px] leading-none text-white">
               {props.groupName}
             </span>
           )}
           {/* 等级行：iconpark v{gid} 精灵图简化为蓝字 v{gid} 徽章 */}
           <div className="mt-1.5 flex items-center gap-1 text-xs">
             <span className="font-semibold text-ink-soft">{t('level_label')}</span>
-            <span className="rounded bg-[rgba(41,151,247,0.1)] px-1.5 py-0.5 text-[10px] font-medium leading-none text-brand">
+            <span className="rounded bg-[rgba(41,151,247,0.1)] px-1.5 py-0.5 text-[11px] font-medium leading-none text-brand">
               v{me.gid}
             </span>
           </div>
@@ -606,7 +608,7 @@ export function UserSideCard(props: {
             ).map(([value, label]) => (
               <div key={label} className="rounded-md bg-zh-stat-bg px-1 py-1.5 text-center">
                 <b className="text-sm font-semibold leading-none tabular-nums text-foreground">{value}</b>
-                <p className="mt-1 text-[10px] leading-none text-muted-foreground">{label}</p>
+                <p className="mt-1 text-[11px] leading-none text-muted-foreground">{label}</p>
               </div>
             ))}
           </div>
