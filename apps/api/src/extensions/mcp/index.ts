@@ -15,7 +15,7 @@
  * 免费层不产生任何长连接时长与额外计费资源。
  */
 import { L } from '../../core/i18n';
-import type { ExtSchema } from '@freeidx/shared';
+import { MCP_SCOPES, type ExtSchema } from '@freeidx/shared';
 import { getExtensions } from '../../core/extensions';
 import type { ExtensionApi, ExtensionModule } from '../../core/extensions/registry';
 import type { Cache } from '../../core/cache';
@@ -37,12 +37,23 @@ import {
 import { MCP_PROTOCOL_VERSION, RPC_ERROR, rpcError } from './protocol';
 import { dispatchBatch, parseConfig, type DispatchDeps, type McpConfig } from './server';
 import { CORE_MCP_RESOURCES, CORE_MCP_TOOLS } from './tools';
+import { MCP_FORUM_TOOL_NAMES, MCP_FORUM_TOOLS } from './forum';
 import { MCP_WRITE_TOOLS } from './write';
 import { ipToLong } from '../../core/auth/session';
 import type { ApiT } from '../../core/i18n';
 
 /** 请求体上限：MCP 参数都是短文本，256KB 足够且能挡住内存放大攻击 */
 const MAX_BODY = 256 * 1024;
+
+/**
+ * 后台「工具黑名单」的候选值：本插件自带工具全集（核心只读 + 写 + 版块配置）。
+ * 其他插件贡献的工具名不在这里，但后台会把配置里已有的额外值一并渲染成勾选项，
+ * 因此手工写入的名字不会被吞掉。
+ */
+const TOOL_DENYLIST_OPTIONS = [...CORE_MCP_TOOLS, ...MCP_WRITE_TOOLS, ...MCP_FORUM_TOOLS].map((tool) => ({
+  value: tool.name,
+  label: tool.name,
+}));
 
 const MCP_SCHEMA: ExtSchema = {
   brief: L(
@@ -72,50 +83,87 @@ const MCP_SCHEMA: ExtSchema = {
   fields: [
     {
       key: 'enabledScopes',
-      type: 'text',
+      type: 'checks',
+      initialValue: 'read',
       label: L(
         '开放档位', '開放檔位', 'Enabled scopes', 'Разрешённые уровни', 'ระดับที่เปิด', 'Freigegebene Stufen', '公開レベル', '허용 범위', 'Niveles habilitados', 'Niveaux autorisés',
       ),
-      placeholder: L('read', 'read', 'read', 'read', 'read', 'read', 'read', 'read', 'read', 'read'),
+      // 取值只有 read/write/admin 三个协议术语，做成勾选：不用记格式、也不会拼错静默失效
+      options: MCP_SCOPES.map((s) => ({ value: s, label: s })),
       help: L(
-        '逗号分隔：read=只读，write=含写入，admin=含版务。写类工具需同时满足令牌档位，默认只开 read。',
-        '逗號分隔：read=唯讀，write=含寫入，admin=含版務。寫入類工具需同時滿足權杖檔位，預設只開 read。',
-        'Comma separated: read = read-only, write = allow writes, admin = allow moderation. Write tools also require the token scope; read only by default.',
-        'Через запятую: read — только чтение, write — запись, admin — модерация. Инструменты записи дополнительно требуют уровень токена; по умолчанию только read.',
-        'คั่นด้วยจุลภาค: read=อ่านอย่างเดียว, write=อนุญาตเขียน, admin=อนุญาตจัดการ เครื่องมือเขียนต้องมีระดับของโทเคนด้วย ค่าเริ่มต้นเปิดเฉพาะ read',
-        'Kommagetrennt: read = nur lesen, write = Schreiben erlauben, admin = Moderation erlauben. Schreibwerkzeuge brauchen zusätzlich die Token-Stufe; standardmäßig nur read.',
-        'カンマ区切り: read=読み取りのみ、write=書き込み可、admin=モデレーション可。書き込み系はトークンのレベルも必要です。既定は read のみ。',
-        '쉼표 구분: read=읽기 전용, write=쓰기 허용, admin=관리 허용. 쓰기 도구는 토큰 범위도 충족해야 하며 기본값은 read만.',
-        'Separado por comas: read = solo lectura, write = permitir escritura, admin = permitir moderación. Las herramientas de escritura también requieren el token; por defecto solo read.',
-        'Séparés par des virgules : read = lecture seule, write = écriture autorisée, admin = modération autorisée. Les outils d’écriture exigent aussi le niveau du jeton ; read seul par défaut.',
+        '可多选（勾上即生效）：read=只读，write=含写入，admin=含版务。写类工具需同时满足令牌档位，默认只开 read。',
+        '可多選（勾上即生效）：read=唯讀，write=含寫入，admin=含版務。寫入類工具需同時滿足權杖檔位，預設只開 read。',
+        'Multi-select: read = read-only, write = allow writes, admin = allow moderation. Write tools also require the token scope; read only by default.',
+        'Можно выбрать несколько: read — только чтение, write — запись, admin — модерация. Инструменты записи дополнительно требуют уровень токена; по умолчанию только read.',
+        'เลือกได้หลายค่า: read=อ่านอย่างเดียว, write=อนุญาตเขียน, admin=อนุญาตจัดการ เครื่องมือเขียนต้องมีระดับของโทเคนด้วย ค่าเริ่มต้นเปิดเฉพาะ read',
+        'Mehrfachauswahl: read = nur lesen, write = Schreiben erlauben, admin = Moderation erlauben. Schreibwerkzeuge brauchen zusätzlich die Token-Stufe; standardmäßig nur read.',
+        '複数選択可: read=読み取りのみ、write=書き込み可、admin=モデレーション可。書き込み系はトークンのレベルも必要です。既定は read のみ。',
+        '복수 선택: read=읽기 전용, write=쓰기 허용, admin=관리 허용. 쓰기 도구는 토큰 범위도 충족해야 하며 기본값은 read만.',
+        'Selección múltiple: read = solo lectura, write = permitir escritura, admin = permitir moderación. Las herramientas de escritura también requieren el token; por defecto solo read.',
+        'Sélection multiple : read = lecture seule, write = écriture autorisée, admin = modération autorisée. Les outils d’écriture exigent aussi le niveau du jeton ; read seul par défaut.',
+      ),
+    },
+    {
+      key: 'forumWriteOn',
+      type: 'switch',
+      label: L(
+        '允许修改版块文案',
+        '允許修改版塊文案',
+        'Allow forum text editing',
+        'Разрешить правку текстов разделов',
+        'อนุญาตแก้ไขข้อความบอร์ด',
+        'Forumtexte bearbeiten erlauben',
+        'フォーラム文案の編集を許可',
+        '게시판 문구 수정 허용',
+        'Permitir editar textos del foro',
+        'Autoriser la modification des textes du forum',
+      ),
+      onValue: 1,
+      offValue: 0,
+      defaultOn: false,
+      help: L(
+        '打开后，具备 admin 档位的管理员令牌可调用 forum_get / forum_update 读写版块简介、公告、SEO 标题与关键词（含多语言）。需同时把「开放档位」设为含 admin；默认关闭。',
+        '開啟後，具備 admin 檔位的管理員權杖可呼叫 forum_get / forum_update 讀寫版塊簡介、公告、SEO 標題與關鍵詞（含多語言）。需同時把「開放檔位」設為含 admin；預設關閉。',
+        'When on, an administrator token with the admin scope may call forum_get / forum_update to read and edit forum brief, announcement, SEO title and keywords (including translations). "Enabled scopes" must also include admin; off by default.',
+        'Если включено, токен администратора с уровнем admin может вызывать forum_get / forum_update для чтения и правки описания, объявления, SEO-заголовка и ключевых слов раздела (включая переводы). В «Разрешённых уровнях» должен быть admin; по умолчанию выключено.',
+        'เมื่อเปิด โทเคนผู้ดูแลที่มีระดับ admin จะเรียก forum_get / forum_update เพื่ออ่านและแก้ไขคำอธิบาย ประกาศ SEO title และ keywords ของบอร์ด (รวมหลายภาษา) ได้ ต้องตั้ง "ระดับที่เปิด" ให้มี admin ด้วย ค่าเริ่มต้นปิด',
+        'Wenn aktiv, darf ein Admin-Token mit Stufe admin forum_get / forum_update aufrufen, um Kurzbeschreibung, Ankündigung, SEO-Titel und Keywords (inkl. Übersetzungen) zu lesen und zu ändern. „Freigegebene Stufen“ muss admin enthalten; standardmäßig aus.',
+        'オンの場合、admin レベルの管理者トークンが forum_get / forum_update でフォーラムの概要・告知・SEO タイトル・キーワード（多言語含む）を読み書きできます。「公開レベル」にも admin が必要です。既定はオフ。',
+        '켜면 admin 범위의 관리자 토큰이 forum_get / forum_update로 게시판 설명, 공지, SEO 제목, 키워드(다국어 포함)를 읽고 수정할 수 있습니다. "허용 범위"에도 admin이 있어야 하며 기본값은 꺼짐입니다.',
+        'Si está activo, un token de administrador con nivel admin puede llamar a forum_get / forum_update para leer y editar la descripción, el anuncio, el título SEO y las palabras clave del foro (incluidas traducciones). «Niveles habilitados» debe incluir admin; desactivado por defecto.',
+        'Si activé, un jeton administrateur de niveau admin peut appeler forum_get / forum_update pour lire et modifier la description, l’annonce, le titre SEO et les mots-clés d’un forum (traductions incluses). « Niveaux autorisés » doit inclure admin ; désactivé par défaut.',
       ),
     },
     {
       key: 'toolDenylist',
-      type: 'text',
+      type: 'checks',
       label: L(
         '工具黑名单', '工具黑名單', 'Tool denylist', 'Чёрный список инструментов', 'เครื่องมือที่ห้าม', 'Werkzeug-Sperrliste', 'ツール拒否リスト', '도구 차단 목록', 'Lista de bloqueo', 'Liste de refus',
       ),
+      // 候选即工具清单：勾选比手敲名字可靠（敲错一个字就是「配了但没生效」）
+      options: TOOL_DENYLIST_OPTIONS,
       help: L(
-        '逗号分隔的工具名，命中即不向客户端展示（如 search）。',
-        '逗號分隔的工具名，命中即不向用戶端展示（如 search）。',
-        'Comma-separated tool names hidden from clients (e.g. search).',
-        'Имена инструментов через запятую, скрываемые от клиентов (например, search).',
-        'ชื่อเครื่องมือคั่นด้วยจุลภาคที่จะไม่แสดงต่อไคลเอนต์ (เช่น search)',
-        'Kommagetrennte Werkzeugnamen, die Clients nicht sehen (z. B. search).',
-        'クライアントに表示しないツール名をカンマ区切りで指定（例: search）。',
-        '클라이언트에 표시하지 않을 도구 이름을 쉼표로 구분(예: search).',
-        'Nombres de herramientas separados por comas que no se muestran (p. ej. search).',
-        'Noms d’outils séparés par des virgules, masqués aux clients (ex. search).',
+        '勾选后不向任何客户端展示该工具（不影响令牌与站点档位）。',
+        '勾選後不向任何用戶端展示該工具（不影響權杖與站點檔位）。',
+        'Checked tools are hidden from every client (scopes are unaffected).',
+        'Отмеченные инструменты не показываются ни одному клиенту (на уровни не влияет).',
+        'เครื่องมือที่เลือกจะไม่แสดงต่อไคลเอนต์ใด ๆ (ไม่กระทบระดับสิทธิ์)',
+        'Angehakte Werkzeuge werden keinem Client angezeigt (Stufen bleiben unberührt).',
+        'チェックしたツールはどのクライアントにも表示されません（レベルには影響しません）。',
+        '체크한 도구는 어떤 클라이언트에도 표시되지 않습니다(범위에는 영향 없음).',
+        'Las herramientas marcadas no se muestran a ningún cliente (no afecta a los niveles).',
+        'Les outils cochés sont masqués à tous les clients (sans effet sur les niveaux).',
       ),
     },
     {
       key: 'rateLimitPerMin',
-      type: 'text',
+      type: 'select',
+      initialValue: 60,
       label: L(
         '每令牌每分钟上限', '每權杖每分鐘上限', 'Requests per minute', 'Запросов в минуту', 'คำขอต่อนาที', 'Anfragen pro Minute', '1分あたりの上限', '분당 요청 수', 'Peticiones por minuto', 'Requêtes par minute',
       ),
-      placeholder: L('60', '60', '60', '60', '60', '60', '60', '60', '60', '60'),
+      // 常用档位下拉：避免手填出 6o/6 千这类脏值；库里非候选值（如 45）仍会作为选项显示
+      options: [0, 30, 60, 120, 300, 600].map((n) => ({ value: n, label: String(n) })),
       help: L(
         '单个令牌每分钟可发起的调用数，0 = 不限。',
         '單一權杖每分鐘可發起的呼叫數，0 = 不限。',
@@ -203,6 +251,8 @@ export const mcpPlugin: ExtensionModule = {
     for (const tool of CORE_MCP_TOOLS) api.contributeMcpTool(tool);
     // 写工具照常贡献：可见性由「令牌档位 ∩ 站点 enabledScopes ∩ 站点写闸门」在请求期裁剪
     for (const tool of MCP_WRITE_TOOLS) api.contributeMcpTool(tool);
+    // 版块文案配置（admin）：另受站点点开关 forumWriteOn 控制，关闭时请求期整组摘除
+    for (const tool of MCP_FORUM_TOOLS) api.contributeMcpTool(tool);
     for (const res of CORE_MCP_RESOURCES) api.contributeMcpResource(res);
     api.registerRoute('POST', '/mcp', makeHandler(config));
 
@@ -260,6 +310,8 @@ function makeHandler(bootConfig: McpConfig) {
     // ⑤ 工具表：请求期读已装配好的运行时（此时所有启用插件的 setup 都已完成，顺序无关）
     const rt = await getExtensions(cache, db, c.env);
     const clientIp = c.req.header('cf-connecting-ip') ?? '';
+    // 版块文案工具受站点点开关控制：关闭时整组摘除（tools/list 与 tools/call 同源，模型不会误选）
+    const tools = cfg.forumWriteOn ? rt.mcpTools : rt.mcpTools.filter((t) => !MCP_FORUM_TOOL_NAMES.includes(t.name));
     const deps: DispatchDeps = {
       db,
       cache,
@@ -267,7 +319,7 @@ function makeHandler(bootConfig: McpConfig) {
       lang: String(setting.lang ?? 'zh-cn'),
       actor,
       config: { ...cfg, enabledScopes: writeDeny ? 'read' : cfg.enabledScopes },
-      tools: rt.mcpTools,
+      tools,
       resources: rt.mcpResources,
       ipHash: await ipFingerprint(clientIp),
       // 写工具要把 IP 落到 userip 等风控列，口径与 HTTP 端 ipLongOf(c) 完全一致
