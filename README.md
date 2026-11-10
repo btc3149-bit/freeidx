@@ -129,6 +129,8 @@ Fork the project to your own repository. In your GitHub repository:
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare API Token       | The Token created in Step 1           | Yes      |
 | `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID | Right sidebar of the account homepage | Yes      |
 
+> This table is **only** for the Cloudflare API token / account ID. Runtime secrets such as `JWT_SECRET` and `SECRETS_MASTER_KEY` are **not** configured here — the deploy pipeline does not forward them to the Worker. Add them on the Worker itself in Step 4.
+
 **Variables:**
 
 | Variable Name       | Value                         | Description                                                                                                                                                                                                           | Required |
@@ -152,13 +154,18 @@ After the first deployment runs green, `freeidx-api` will appear in the Workers 
 | -------------------- | -------------------------------------------------------------------------- | ------------------------------------------------- |
 | `JWT_SECRET`         | Login token / CSRF signing                                                 | Yes                                               |
 | `TURNSTILE_SECRET`   | Server-side CAPTCHA verification (must be paired with `TURNSTILE_SITEKEY`) | No                                                |
-| `SECRETS_MASTER_KEY` | AES-GCM master key for plugin payment secrets                              | No                                                |
+| `SECRETS_MASTER_KEY` | AES-GCM master key for SMTP mailbox passwords and plugin secrets | No (omitted ⇒ derived from `JWT_SECRET`) |
 
 Generate a random value locally and paste one at a time:
 
 ```bash
+# JWT_SECRET: any strong random string
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# SECRETS_MASTER_KEY (optional): base64 32 bytes (44 chars) or 64-char hex; omitted = derived from JWT_SECRET
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+> `SECRETS_MASTER_KEY` is **optional**. When it is absent (or malformed) the app derives a 32-byte key from the required `JWT_SECRET` via SHA-256, so email works out of the box; when present it takes priority (use it to keep mailbox credentials separated from the login key). Accepted formats: base64 of exactly 32 bytes (44 chars) or 64-char hex; anything else is ignored and the derived key is used. **Note**: with the derived key, rotating `JWT_SECRET` makes stored SMTP passwords undecryptable (re-enter them), and once passwords are saved do not change the key. No Node.js? Generate one in the browser console (F12): `btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))`.
 
 #### Step 5: Stay Up to Date
 
@@ -183,7 +190,7 @@ pnpm --filter @freeidx/api dev
 ```
 
 - Runs miniflare locally; no real resource IDs needed
-- Put secrets in `apps/api/.dev.vars`
+- Put secrets in `apps/api/.dev.vars` (`JWT_SECRET`, `SECRETS_MASTER_KEY`, …); `wrangler dev` reads it once at startup, so restart the dev server after editing
 - Database: `pnpm db:apply` to apply migrations, `pnpm db:seed` to load initial data
 
 ## Method 3: Cloudflare Dashboard Visual Build

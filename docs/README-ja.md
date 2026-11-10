@@ -127,6 +127,8 @@ User visits: forum.example.com
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare API Token      | ステップ 1 で作成した Token | はい |
 | `CLOUDFLARE_ACCOUNT_ID` | 自分の Cloudflare Account ID | アカウントホーム画面の右サイドバー  | はい |
 
+> この表は Cloudflare API Token / Account ID 専用です。`JWT_SECRET` や `SECRETS_MASTER_KEY` などの**ランタイムシークレットはここでは設定できません**（デプロイパイプラインは Worker に転送しません）。ステップ 4 で Worker 側に追加してください。
+
 **変数：**
 
 | 変数名                 | 値                               | 説明                                                                                                                                            | 必須  |
@@ -150,13 +152,18 @@ GitHub リポジトリの **Actions** ページで以下を行います：
 | -------------------- | --------------------------------------------------------- | ---------------------- |
 | `JWT_SECRET`         | ログイントークン / CSRF の署名                                       | はい                     |
 | `TURNSTILE_SECRET`   | サーバーサイドでの CAPTCHA 検証（`TURNSTILE_SITEKEY` とペアで設定する必要があります） | いいえ                    |
-| `SECRETS_MASTER_KEY` | プラグインの決済シークレット用の AES-GCM マスターキー                           | いいえ                    |
+| `SECRETS_MASTER_KEY` | メール SMTP パスワード / プラグイン秘密鍵の AES-GCM マスターキー | いいえ（未設定なら `JWT_SECRET` から派生） |
 
 ローカルでランダムな値を生成し、1 つずつ貼り付けてください：
 
 ```bash
+# JWT_SECRET: any strong random string
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# SECRETS_MASTER_KEY (optional): base64 32 bytes (44 chars) or 64-char hex; omitted = derived from JWT_SECRET
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+> `SECRETS_MASTER_KEY` は**任意**です。未設定（または不正な値）の場合、必須の `JWT_SECRET` から SHA-256 で 32 バイトの鍵を派生して SMTP パスワードを暗号化するため、メール機能は追加設定なしで使えます。設定した場合はそちらが優先されます（ログイン鍵と分離したい場合に設定）。値は base64 の 32 バイト（44 文字）または 64 桁 hex に対応し、それ以外は無視して派生鍵にフォールバックします。**注意**：派生鍵を使う場合、`JWT_SECRET` をローテーションすると保存済みの SMTP パスワードが復号できなくなります（再入力が必要）。一度パスワードを保存したら鍵は変更しないでください。Node がない場合はブラウザの F12 → Console で生成できます：`btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))`。
 
 ### 方法 2: ローカル開発
 
@@ -169,7 +176,7 @@ pnpm --filter @freeidx/api dev
 ```
 
 - ローカルでは miniflare で動作し、実際のリソース ID は不要です
-- secrets は `apps/api/.dev.vars` に記述します
+- secrets は `apps/api/.dev.vars` に記述します（`JWT_SECRET`、`SECRETS_MASTER_KEY` など）。`wrangler dev` は起動時に一度だけ読み込むため、編集後は再起動が必要です
 - データベース: `pnpm db:apply` でマイグレーションを適用、`pnpm db:seed` で初期データを読み込みます
 
 ## 方法 3: Cloudflare Dashboard での画面操作による構築

@@ -503,8 +503,60 @@ export interface SmtpAccountInput {
   pass?: string;
 }
 
+/** 单账号一次投递尝试（stage 为失败阶段：config/connect/greeting/ehlo/starttls/auth/mailfrom/rcpt/data/body） */
+export interface MailAttempt {
+  account: string;
+  ok: boolean;
+  stage?: string;
+  error?: string;
+}
+
+/** 运行时 DNS 解析结果（DoH 探测，仅测试发信时返回；用于区分「DNS 被改写」与「环境禁止出站」） */
+export interface DnsProbe {
+  host: string;
+  ips: string[];
+  error?: string;
+}
+
+/** 一次发信报告：POST /api/admin/email-setting/test 回包，以及 GET 的 last（最近一次发信，含正式发码） */
+export interface MailReport {
+  ok: boolean;
+  to: string;
+  /** 发起时间（秒） */
+  at: number;
+  /** true = 后台手动测试 */
+  test: boolean;
+  attempts: MailAttempt[];
+  /** 仅测试发信时带：目标主机的运行时解析结果 */
+  dns?: DnsProbe;
+}
+
+/** HTTP 邮件 API 服务商（与后端 HTTP_PROVIDERS 对齐；'' = 未启用） */
+export type HttpMailProvider = '' | 'resend' | 'sendgrid' | 'brevo' | 'custom';
+
+/** GET 回显：Key 永不回显，只回 hasKey */
+export interface HttpMailSetting {
+  provider: HttpMailProvider;
+  from: string;
+  /** provider=custom 时的接口地址 */
+  url: string;
+  hasKey: boolean;
+}
+
+/** PUT 提交：key 留空即保持原值 */
+export interface HttpMailInput {
+  provider: HttpMailProvider;
+  from: string;
+  url: string;
+  key?: string;
+}
+
 export interface EmailSettingView {
   pool: SmtpAccountView[];
+  /** HTTP 邮件 API 通道（SMTP 出站被环境拦截时的兜底） */
+  http: HttpMailSetting;
+  /** 最近一次发信结果（无记录为 null） */
+  last: MailReport | null;
 }
 
 /** GET /api/admin/points/logs 行（username 经 LEFT JOIN，理论上不空，仍按可空处理） */

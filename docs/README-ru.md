@@ -127,6 +127,8 @@ User visits: forum.example.com
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare API Token       | Token, созданный на шаге 1                      | Да          |
 | `CLOUDFLARE_ACCOUNT_ID` | Ваш Cloudflare Account ID  | Правая боковая панель главной страницы аккаунта | Да          |
 
+> Эта таблица только для токена Cloudflare API / Account ID. Runtime-секреты вроде `JWT_SECRET` и `SECRETS_MASTER_KEY` **здесь не задаются** — пайплайн деплоя не передаёт их в Worker. Добавьте их на Worker на шаге 4.
+
 **Переменные:**
 
 | Название переменной | Значение                      | Описание                                                                                                                                                                                                                                                                             | Обязательно |
@@ -150,13 +152,18 @@ User visits: forum.example.com
 | -------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------- |
 | `JWT_SECRET`         | Подпись токена входа / CSRF                                                     | Да                                                 |
 | `TURNSTILE_SECRET`   | Серверная проверка CAPTCHA (должен использоваться в паре с `TURNSTILE_SITEKEY`) | Нет                                                |
-| `SECRETS_MASTER_KEY` | Мастер-ключ AES-GCM для платёжных секретов плагинов                             | Нет                                                |
+| `SECRETS_MASTER_KEY` | Мастер-ключ AES-GCM для паролей SMTP и секретов плагинов | Нет (при отсутствии выводится из `JWT_SECRET`) |
 
 Сгенерируйте случайное значение локально и вставляйте по одному:
 
 ```bash
+# JWT_SECRET: any strong random string
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# SECRETS_MASTER_KEY (optional): base64 32 bytes (44 chars) or 64-char hex; omitted = derived from JWT_SECRET
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+> `SECRETS_MASTER_KEY` **необязателен**. Если он не задан (или задан неверно), приложение выводит 32-байтовый ключ из обязательного `JWT_SECRET` через SHA-256 — почта работает без дополнительной настройки. Если задан, он имеет приоритет (нужен, чтобы отделить почтовые учётные данные от ключа сессии). Допустимы base64 ровно из 32 байт (44 символа) или 64 hex-символа; любой другой вид игнорируется и используется производный ключ. **Внимание**: при производном ключе ротация `JWT_SECRET` делает сохранённые пароли SMTP нерасшифровываемыми (их придётся ввести заново); после первого успешного сохранения ключ не меняйте. Нет Node? Сгенерируйте в консоли браузера (F12): `btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))`.
 
 ### Способ 2: локальная разработка
 
@@ -169,7 +176,7 @@ pnpm --filter @freeidx/api dev
 ```
 
 - Локально используется miniflare; реальные ID ресурсов не нужны
-- Секреты разместите в `apps/api/.dev.vars`
+- Секреты разместите в `apps/api/.dev.vars` (`JWT_SECRET`, `SECRETS_MASTER_KEY` и т. п.); `wrangler dev` читает файл только при старте — после правки перезапустите
 - База данных: `pnpm db:apply` — применить миграции, `pnpm db:seed` — загрузить начальные данные
 
 ## Способ 3: визуальная сборка через Cloudflare Dashboard

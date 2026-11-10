@@ -127,6 +127,8 @@
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare API Token     | 第一步创建的 Token | 必需   |
 | `CLOUDFLARE_ACCOUNT_ID` | 你的 Cloudflare Account ID | 账号首页右侧栏      | 必需   |
 
+> 这张表只放 Cloudflare API Token / Account ID。`JWT_SECRET`、`SECRETS_MASTER_KEY` 等**运行时密钥不在这里配置**——部署流水线不会把它们透传给 Worker，请在第四步加到 Worker 上。
+
 **Variables：**
 
 | Variable 名称         | 值                             | 描述                                                                                                      | 是否必需 |
@@ -150,13 +152,18 @@
 | -------------------- | -------------------------------------- | ------------ |
 | `JWT_SECRET`         | 登录令牌 / CSRF 签名                         | 必需           |
 | `TURNSTILE_SECRET`   | 人机验证服务端校验（需与 `TURNSTILE_SITEKEY` 成对配置） | 非必需          |
-| `SECRETS_MASTER_KEY` | 插件支付密钥的 AES-GCM 主密钥                    | 非必需          |
+| `SECRETS_MASTER_KEY` | 邮箱 SMTP 密码 / 插件私钥的 AES-GCM 主密钥 | 非必需（缺省由 `JWT_SECRET` 派生） |
 
 随机值本地生成一条粘一条：
 
 ```bash
+# JWT_SECRET: any strong random string
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# SECRETS_MASTER_KEY (optional): base64 32 bytes (44 chars) or 64-char hex; omitted = derived from JWT_SECRET
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+> `SECRETS_MASTER_KEY` **可不配**：缺省（或填了非法值）时，系统用必填项 `JWT_SECRET` 经 SHA-256 派生 32 字节密钥来加密 SMTP 密码，邮箱功能开箱即用；配了则优先使用（想与登录密钥隔离时配置）。值支持 base64 的 32 字节（44 字符）或 64 位 hex，其他形态会被忽略并回退派生密钥。**注意**：走派生密钥时，轮换 `JWT_SECRET` 会让已存的邮箱密码解不开（需重填）；成功保存过密码后就不要再更换密钥。没有 Node 时可在浏览器 F12 → Console 生成：`btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))`。
 
 ### 方法 2：本地开发
 
@@ -169,7 +176,7 @@ pnpm --filter @freeidx/api dev
 ```
 
 - 本地跑 miniflare，不需要真实资源 ID
-- 密钥放 `apps/api/.dev.vars`
+- 密钥放 `apps/api/.dev.vars`（`JWT_SECRET`、`SECRETS_MASTER_KEY` 等）——`wrangler dev` 只在启动时读一次，改完必须重启
 - 数据库：`pnpm db:apply` 应用迁移，`pnpm db:seed` 灌入初始数据
 
 ## 方法 3：Cloudflare 后台可视化构建

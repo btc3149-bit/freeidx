@@ -127,6 +127,8 @@ User visits: forum.example.com
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare API Token      | 1단계에서 만든 Token   | 예  |
 | `CLOUDFLARE_ACCOUNT_ID` | 본인의 Cloudflare Account ID | 계정 홈페이지 오른쪽 사이드바 | 예  |
 
+> 이 표는 Cloudflare API Token / Account ID 전용입니다. `JWT_SECRET`, `SECRETS_MASTER_KEY` 같은 **런타임 시크릿은 여기서 설정할 수 없습니다** — 배포 파이프라인이 Worker로 전달하지 않습니다. 4단계에서 Worker에 직접 추가하세요.
+
 **변수:**
 
 | 변수 이름               | 값                             | 설명                                                                                                                                          | 필수  |
@@ -150,13 +152,18 @@ GitHub 저장소의 **Actions** 페이지에서:
 | -------------------- | -------------------------------------------- | ------------------ |
 | `JWT_SECRET`         | 로그인 토큰 / CSRF 서명                             | 예                  |
 | `TURNSTILE_SECRET`   | 서버 측 캡차 검증 (`TURNSTILE_SITEKEY`와 반드시 짝으로 설정) | 아니요                |
-| `SECRETS_MASTER_KEY` | 플러그인 결제 시크릿용 AES-GCM 마스터 키                   | 아니요                |
+| `SECRETS_MASTER_KEY` | 메일 SMTP 비밀번호 / 플러그인 개인 키용 AES-GCM 마스터 키 | 아니요(미설정 시 `JWT_SECRET`에서 파생) |
 
 로컬에서 무작위 값을 생성해 하나씩 붙여넣습니다:
 
 ```bash
+# JWT_SECRET: any strong random string
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# SECRETS_MASTER_KEY (optional): base64 32 bytes (44 chars) or 64-char hex; omitted = derived from JWT_SECRET
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+> `SECRETS_MASTER_KEY`는 **선택**입니다. 없거나 값이 잘못되면 필수 항목인 `JWT_SECRET`에서 SHA-256으로 32바이트 키를 파생해 SMTP 비밀번호를 암호화하므로 메일 기능이 바로 동작합니다. 설정하면 그 값이 우선합니다(로그인 키와 분리하고 싶을 때 설정). 값은 base64 32바이트(44자) 또는 64자리 hex를 지원하며, 그 외 형태는 무시하고 파생 키를 사용합니다. **주의**: 파생 키를 쓰는 경우 `JWT_SECRET`을 교체하면 저장된 SMTP 비밀번호를 복호화할 수 없습니다(재입력 필요). 한 번 비밀번호를 저장한 뒤에는 키를 바꾸지 마세요. Node가 없다면 브라우저 F12 → Console에서 생성하세요: `btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))`.
 
 ### 방법 2: 로컬 개발
 
@@ -169,7 +176,7 @@ pnpm --filter @freeidx/api dev
 ```
 
 - 로컬에서 miniflare로 실행; 실제 리소스 ID 불필요
-- 시크릿은 `apps/api/.dev.vars`에 넣습니다
+- 시크릿은 `apps/api/.dev.vars`에 넣습니다(`JWT_SECRET`, `SECRETS_MASTER_KEY` 등). `wrangler dev`는 시작 시 한 번만 읽으므로 수정 후 재시작해야 합니다
 - 데이터베이스: `pnpm db:apply`로 마이그레이션 적용, `pnpm db:seed`로 초기 데이터 적재
 
 ## 방법 3: Cloudflare Dashboard에서 직접 구축

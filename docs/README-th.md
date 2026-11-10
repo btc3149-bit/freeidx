@@ -127,6 +127,8 @@ Fork โปรเจกต์ไปยัง repository ของคุณเอ
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare API Token       | Token ที่สร้างในขั้นตอนที่ 1          | ใช่      |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID ของคุณ | แถบด้านขวาของหน้าแรกบัญชี            | ใช่      |
 
+> ตารางนี้สำหรับ Cloudflare API Token / Account ID เท่านั้น runtime secret อย่าง `JWT_SECRET` และ `SECRETS_MASTER_KEY` **ไม่ได้ตั้งค่าที่นี่** — pipeline การ deploy จะไม่ส่งต่อไปยัง Worker ให้เพิ่มที่ Worker ในขั้นตอนที่ 4
+
 **ตัวแปร:**
 
 | ชื่อตัวแปร          | ค่า                           | คำอธิบาย                                                                                                                                                                                                              | จำเป็น   |
@@ -150,13 +152,18 @@ Fork โปรเจกต์ไปยัง repository ของคุณเอ
 | -------------------- | -------------------------------------------------------------------------- | ------------------------------------------------- |
 | `JWT_SECRET`         | เซ็น login token / CSRF                                                    | ใช่                                               |
 | `TURNSTILE_SECRET`   | ตรวจสอบ CAPTCHA ฝั่งเซิร์ฟเวอร์ (ต้องใช้คู่กับ `TURNSTILE_SITEKEY`)         | ไม่                                               |
-| `SECRETS_MASTER_KEY` | คีย์หลัก AES-GCM สำหรับความลับการชำระเงินของปลั๊กอิน                        | ไม่                                               |
+| `SECRETS_MASTER_KEY` | คีย์หลัก AES-GCM ของรหัสผ่าน SMTP และความลับของปลั๊กอิน | ไม่ (ถ้าไม่ตั้งจะสร้างจาก `JWT_SECRET`) |
 
 สร้างค่าแบบสุ่มในเครื่องแล้วคัดลอกไปวางทีละค่า:
 
 ```bash
+# JWT_SECRET: any strong random string
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# SECRETS_MASTER_KEY (optional): base64 32 bytes (44 chars) or 64-char hex; omitted = derived from JWT_SECRET
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+> `SECRETS_MASTER_KEY` เป็น**ตัวเลือก** หากไม่ได้ตั้งค่า (หรือค่าผิดรูปแบบ) ระบบจะสร้างคีย์ 32 ไบต์จาก `JWT_SECRET` (ซึ่งเป็นค่าบังคับ) ด้วย SHA-256 ทำให้ฟังก์ชันอีเมลใช้งานได้ทันที หากตั้งค่าไว้จะใช้ค่านั้นก่อน (เหมาะเมื่อต้องการแยก ข้อมูลรับรองอีเมลออกจากคีย์ล็อกอิน) ค่ารองรับ base64 ขนาด 32 ไบต์ (44 ตัวอักษร) หรือ hex 64 ตัวอักษร รูปแบบอื่นจะถูกเพิกเฉย และใช้คีย์ที่สร้างขึ้นแทน **ข้อควรระวัง**: หากใช้คีย์ที่สร้างขึ้น การเปลี่ยน `JWT_SECRET` จะทำให้รหัสผ่าน SMTP ที่บันทึกไว้ถอดไม่ได้ (ต้องกรอกใหม่) และเมื่อบันทึกรหัสผ่านสำเร็จแล้วไม่ควรเปลี่ยนคีย์อีก หากไม่มี Node ให้สร้างในเบราว์เซอร์ F12 → Console: `btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))`
 
 ### วิธีที่ 2: การพัฒนาแบบ local
 
@@ -169,7 +176,7 @@ pnpm --filter @freeidx/api dev
 ```
 
 - รันด้วย miniflare บนเครื่อง ไม่ต้องใช้ resource ID จริง
-- ใส่ secrets ไว้ใน `apps/api/.dev.vars`
+- ใส่ secrets ไว้ใน `apps/api/.dev.vars` (`JWT_SECRET`, `SECRETS_MASTER_KEY` ฯลฯ) `wrangler dev` อ่านครั้งเดียวตอนเริ่มทำงาน ต้องรีสตาร์ทหลังแก้ไข
 - ฐานข้อมูล: `pnpm db:apply` เพื่อ apply migrations, `pnpm db:seed` เพื่อโหลดข้อมูลเริ่มต้น
 
 ## วิธีที่ 3: สร้างผ่านหน้าเว็บ Cloudflare Dashboard

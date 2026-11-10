@@ -10,7 +10,7 @@ import { Code } from '@freeidx/shared';
 import { AppError, ok } from '../../middleware/envelope';
 import { ADMIN_CATALOG, extSchemaOf } from '../../core/extensions';
 import { loadExtensionsState } from '../../core/extensions/registry';
-import { loadExtConfig, loadExtSecret, saveExtConfig, saveExtSecret, extSecretKey } from '../../core/ext-store';
+import { hasSecretsKey, loadExtConfig, loadExtSecret, saveExtConfig, saveExtSecret, extSecretKey } from '../../core/ext-store';
 import type { ApiT } from '../../core/i18n';
 import { core, readJsonObject, type ReadEnv } from '../shared';
 
@@ -129,7 +129,7 @@ export function adminExtensionsRoutes(): Hono<ReadEnv> {
       .bind(extSecretKey(id))
       .first<{ v: string }>();
     // 结构化表单用：只回已配置的键名（绝不回值），master key 缺失/解密失败 → 空
-    const secretKeys = Object.keys(await loadExtSecret(db, id, c.env.SECRETS_MASTER_KEY));
+    const secretKeys = Object.keys(await loadExtSecret(db, id, c.env));
     return ok(c, 'ok', {
       data: {
         manifest: { id: mod.manifest.id, name: mod.manifest.name, version: mod.manifest.version },
@@ -152,6 +152,14 @@ export function adminExtensionsRoutes(): Hono<ReadEnv> {
     if (!mod) throw new AppError(Code.NOT_FOUND, t('common.extNotFound'));
     const body = await readJsonObject(c);
 
+    /**
+     * 私密项可写性：显式 `SECRETS_MASTER_KEY`（base64 或 hex）优先，否则由必填的 `JWT_SECRET` 派生
+     * （见 core/ext-store.keyCandidates）。两者都缺才报「未配置」——正常部署不会走到。
+     */
+    const assertSecretsWritable = async (): Promise<void> => {
+      if (!(await hasSecretsKey(c.env))) throw new AppError(Code.VALIDATION_ERROR, t('admin.masterKeyMissing'));
+    };
+
     const patch: { installed?: 0 | 1; enable?: 0 | 1 } = {};
     const enable = asFlag(body.enable);
     const installed = asFlag(body.installed);
@@ -170,23 +178,21 @@ export function adminExtensionsRoutes(): Hono<ReadEnv> {
     if (body.secret !== undefined) {
       const sec = body.secret;
       if (!sec || typeof sec !== 'object' || Array.isArray(sec)) throw new AppError(Code.VALIDATION_ERROR, t('admin.secretInvalid'));
-      const master = c.env.SECRETS_MASTER_KEY;
-      if (!master) throw new AppError(Code.VALIDATION_ERROR, t('admin.masterKeyMissing'));
-      await saveExtSecret(db, id, sec as Record<string, unknown>, master);
+      await assertSecretsWritable();
+      await saveExtSecret(db, id, sec as Record<string, unknown>, c.env);
     }
 
     // 结构化表单用的增量合并：只改提交的键，值为 null 表示删除该键；未提交的键原样保留
     if (body.secretPatch !== undefined) {
       const patch = body.secretPatch;
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new AppError(Code.VALIDATION_ERROR, t('admin.secretPatchInvalid'));
-      const master = c.env.SECRETS_MASTER_KEY;
-      if (!master) throw new AppError(Code.VALIDATION_ERROR, t('admin.masterKeyMissing'));
-      const merged = await loadExtSecret(db, id, master);
+      await assertSecretsWritable();
+      const merged = await loadExtSecret(db, id, c.env);
       for (const [k, v] of Object.entries(patch)) {
         if (v === null) delete merged[k];
         else merged[k] = v;
       }
-      await saveExtSecret(db, id, merged, master);
+      await saveExtSecret(db, id, merged, c.env);
     }
 
     return ok(c, t('common.saved'), { data: { id } });
