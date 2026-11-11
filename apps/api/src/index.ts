@@ -22,7 +22,7 @@ import { classifyUserAgent, matchRegisteredPath } from './core/crawler';
 import { prerender, seoCoreRoutes } from './modules/seo/core';
 import { loadSetting } from './core/loaders';
 import { loadThemeId } from './core/theme';
-import { createApiT, t0, type ApiT } from './core/i18n';
+import { acceptLangOf, createApiT, t0, type ApiT } from './core/i18n';
 import { threadRoutes } from './modules/thread/routes';
 import { bootstrapRoutes } from './modules/bootstrap/routes';
 import { userRoutes } from './modules/user/routes';
@@ -109,10 +109,10 @@ app.use('*', edgeCache());
 // 词条翻译器（i18n 基建）：语言协商挂 c.set('t')（读穿缓存，命中零 D1）；
 // 挂在 edgeCache 之后——边缘缓存命中时响应已定稿，不执行；/api/health 与 runlevel 同口径跳过（不查库）；
 // setting 装载失败（如 kv 损坏/缓存绑定缺失）回落 zh-cn 缺省翻译器，不阻断请求。
-// 协商优先级（§10.3 前台语言 = 用户偏好 > 站点语言，此前仅界面成立、API 消息断链）：
-//  - /api/admin/*：adminLang（后台界面语言独立于前台，不受用户 cookie 影响）；
+// 协商优先级（前台语言 = 用户偏好 > 浏览器语言 > 站点语言，与 lib/i18n 的 useLang 逐项一致）：
+//  - /api/admin/*：adminLang（后台界面语言独立于前台，不受用户 cookie 与浏览器影响）；
 //  - 其余前台接口：cookie `lang`（LangSwitch setPref 写入，非 httpOnly，同域自动携带；
-//    值必须在 AVAILABLE_LOCALES 内，非法值忽略）> setting.lang。
+//    值必须在 AVAILABLE_LOCALES 内，非法值忽略）> Accept-Language 匹配到的可选 locale > setting.lang。
 // SEO 产物（sitemap/prerender）是全站性内容，仍按 setting.lang 生成，不参与用户协商。
 function cookieLangOf(header: string | undefined): string | null {
   const m = /(?:^|;\s*)lang=([^;]+)/.exec(header ?? '');
@@ -130,7 +130,9 @@ app.use('*', async (c, next) => {
       const setting = await loadSetting(c.get('cache'), c.get('db'));
       const lang = c.req.path.startsWith('/api/admin/')
         ? setting.adminLang || setting.lang
-        : (cookieLangOf(c.req.header('cookie')) ?? setting.lang);
+        : (cookieLangOf(c.req.header('cookie')) ??
+           acceptLangOf(c.req.header('accept-language')) ??
+           setting.lang);
       c.set('t', createApiT(lang));
       /* 供 runlevel 等后续中间件按同一口径取用（如站点关闭原因的多语言文案） */
       c.set('lang', lang);
@@ -251,11 +253,12 @@ const CJK_FONT_URL = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v1.woff2';
  * SPA 壳引导注入：在业务脚本之前写死「启用主题 id + 前台语言」，前端首帧即可用。
  *
  *  - `window.__FI_THEME__`：省掉一次 /api/theme/active 引导请求，也避免「先默认主题再换肤」的闪烁；
- *  - `window.__FI_LANG__`：站点语言。前端据此**直接拉对应语言包**——此前首帧只能按
+ *  - `window.__FI_LANG__`：**站点语言**。前端据此直接拉对应语言包——此前首帧只能按
  *    localStorage/DEFAULT_LOCALE(en-us) 猜，中文站点首访会先下 en-us 包、渲染一帧英文，
  *    bootstrap 到达后再补下 zh-cn 包（实测同一页面下载两个词典 chunk）。
- *  - `<html lang>`：同时落 CSS 用的语言标记，让 --font-app 从一开始就选中正确字体；
- *    已存语言偏好（localStorage）优先级高于站点语言，这里一并对齐，避免先按站点语言下中文字体。
+ *  - `<html lang>`：落 CSS 用的语言标记，让 --font-app 从一开始就选中正确字体。按完整协商链取值：
+ *    用户偏好（localStorage）> 浏览器语言（navigator.languages）> 站点语言 —— 与 lib/i18n 的
+ *    initialLocale 同序，避免首帧先按站点语言下字体、挂载后再换（中文站点的英文浏览器访客同理）。
  *  - 中文界面顺带预载字体：字体是首屏最大的单一资源，等 CSS 解析到 @font-face 才发起太晚。
  *
  * 注入失败（读壳失败/无 </head>）一律原样返回，前端会回落到「同名接口 + 默认主题 + 默认语言」。
@@ -263,12 +266,23 @@ const CJK_FONT_URL = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v1.woff2';
 async function injectShell(res: Response, themeId: string, siteLang: string): Promise<Response> {
   try {
     const html = await res.text();
+    /**
+     * 内联脚本无法 import，语言匹配规则是 shared/i18n/locales.ts 的 matchBrowserLocale 的**镜像**
+     * （完全一致 → 中文按 hant/tw/hk/mo 分流 → 同主语言），改动必须同步两处。
+     * 语言清单直接由服务端序列化下发，避免第三处硬编码 AVAILABLE_LOCALES。
+     */
     const script =
       `<script>window.__FI_THEME__=${JSON.stringify(themeId)};` +
       `window.__FI_LANG__=${JSON.stringify(siteLang)};` +
-      `document.documentElement.lang=${JSON.stringify(siteLang)};` +
-      `try{var p=localStorage.getItem("freeidx.lang");if(p)document.documentElement.lang=p}catch(e){}` +
-      `try{if(/^zh/.test(document.documentElement.lang)){var k=document.createElement("link");` +
+      `var FI_L=${JSON.stringify(AVAILABLE_LOCALES)};` +
+      `function fiM(a){for(var i=0;i<a.length;i++){var t=String(a[i]||"").toLowerCase().replace(/_/g,"-");` +
+      `if(!t)continue;if(FI_L.indexOf(t)>=0)return t;var b=t.split("-")[0];` +
+      `if(b==="zh")return /(?:hant|tw|hk|mo)/.test(t)?"zh-tw":"zh-cn";` +
+      `for(var j=0;j<FI_L.length;j++)if(FI_L[j].split("-")[0]===b)return FI_L[j]}return null}` +
+      `var fiG=null;try{fiG=localStorage.getItem("freeidx.lang")}catch(e){}` +
+      `if(!fiG||FI_L.indexOf(fiG)<0)fiG=fiM(navigator.languages||[navigator.language])||${JSON.stringify(siteLang)};` +
+      `document.documentElement.lang=fiG;` +
+      `try{if(/^zh/.test(fiG)){var k=document.createElement("link");` +
       `k.rel="preload";k.as="font";k.type="font/woff2";k.crossOrigin="";` +
       `k.href=${JSON.stringify(CJK_FONT_URL)};document.head.appendChild(k)}}catch(e){}</script>`;
     // 优先注入 </head>（脚本在任何业务脚本之前求值）；无 head 时退化到 </body>；都没有则原样返回文本
@@ -290,8 +304,9 @@ async function injectShell(res: Response, themeId: string, siteLang: string): Pr
 }
 
 // 合并部署：run_worker_first 让所有请求先进 Worker，未匹配路由必须自己兜底，
-// 否则 BrowserRouter 深链直访会拿到 JSON 404。/api、/files 保持 JSON，其余转交静态资源，
-// 由 not_found_handling="single-page-application" 回退 index.html（爬虫分支已在 prerender() 处理）。
+// 否则 BrowserRouter 深链直访会拿到 JSON 404。/api、/files 保持 JSON；
+// 干净路径由本函数显式取 index.html 壳（爬虫分支已在 prerender() 处理），
+// 带扩展名的路径一律 404 —— 静态层是 not_found_handling="none"，不会拿 HTML 顶替缺失的 .js。
 app.notFound(async (c) => {
   const p = c.req.path;
   if (p === '/api' || p === '/files' || p.startsWith('/api/') || p.startsWith('/files/')) {
@@ -315,14 +330,28 @@ app.notFound(async (c) => {
       404,
     );
   }
-  const res = await c.env.ASSETS.fetch(c.req.raw);
-  // 拿到的是 SPA 壳（而非真实文件）时，只有人类浏览器的干净路径才允许回退到壳：
-  // 爬虫拿到壳页 200 会被当正文收录（§16.1），带扩展名的路径（/sitemap.xml、/xxx.htm）
-  // 拿到壳页则意味着插件路由未注册，同样必须 404。
+  /**
+   * 带扩展名的路径（/favicon.ico、/sitemap.xml、/xxx.htm、/assets/xxx.js）：
+   * 先按**真实静态文件**取一次 —— public/ 根级文件没有前缀路由，只能落到这里；
+   * 命中就原样返回（未命中时资产层是 not_found_handling="none"，回真 404）。
+   * 拿到 HTML 一律改回 JSON 404：回壳页不仅误导爬虫，还会让浏览器把 HTML 当 JS 模块加载
+   * （发版后旧 hash 的经典表现），前端就只剩「系统繁忙」看不出是资产版本问题。
+   */
   const fileLike = /\/[^/]*\.[^/.]+$/.test(p);
-  const bot = classifyUserAgent(c.req.header('user-agent') ?? '') === 'searchbot';
-  if (!res.headers.get('content-type')?.includes('text/html')) return res;
-  if (fileLike || bot) return handleNotFound(c);
+  if (fileLike) {
+    const asset = await c.env.ASSETS.fetch(c.req.raw);
+    if (asset.status >= 400 || asset.headers.get('content-type')?.includes('text/html')) return handleNotFound(c);
+    return asset;
+  }
+  // 爬虫拿壳页 200 会被当正文收录（§16.1）：干净路径也只给人类浏览器
+  if (classifyUserAgent(c.req.header('user-agent') ?? '') === 'searchbot') return handleNotFound(c);
+  /**
+   * 干净路径 = SPA 深链（BrowserRouter）：显式取壳，不依赖资产层 not_found_handling。
+   * wrangler.toml 已改为 "none"：静态资源未命中一律真 404，`/assets/*.js` 不会再被 index.html 顶替，
+   * 前端据此识别「chunk 不存在」并整页刷新取新版本（见 web 的 lib/chunk-reload）。
+   */
+  const res = await c.env.ASSETS.fetch(new Request(new URL('/index.html', c.req.url)));
+  if (!res.ok || !res.headers.get('content-type')?.includes('text/html')) return handleNotFound(c);
   const themeId = await loadThemeId(c.get('cache'), c.get('db'));
   // 站点语言：非法/读取失败回落 DEFAULT_LOCALE（与改版前「无注入」时的行为一致）
   const setting = await loadSetting(c.get('cache'), c.get('db')).catch(() => null);
