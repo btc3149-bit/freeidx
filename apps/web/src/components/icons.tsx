@@ -130,6 +130,12 @@ const P = {
   envelope: ['M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z', 'm3 7 9 6 9-6'],
   /* 全部版块宫格 */
   grid: ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M3 14h7v7H3z', 'M14 14h7v7h-7z'],
+  /* 导航栏（2×2 圆角宫格：外框 + 十字分隔），侧栏「版块导航」入口使用 */
+  nav_grid: [
+    'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z',
+    'M12 3v18',
+    'M3 12h18',
+  ],
   /* 发帖圆钮 */
   plus_circle: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 8v8', 'M8 12h8'],
   /* 更多 */
@@ -168,6 +174,14 @@ const P = {
 } as const;
 
 export type IconName = keyof typeof P;
+
+/** 全部图标名（后台图标选择器用；顺序沿用上方定义顺序，便于按语义浏览） */
+export const ICON_NAMES = Object.keys(P) as IconName[];
+
+/** 运行时白名单校验：来自后台配置/接口的图标名不可信，未知名称一律按「无图标」处理 */
+export function isIconName(v: unknown): v is IconName {
+  return typeof v === 'string' && v !== '' && Object.prototype.hasOwnProperty.call(P, v);
+}
 
 export function Icon({ name, className = 'size-4', title, ...rest }: { name: IconName; title?: string } & SVGProps<SVGSVGElement>) {
   return (

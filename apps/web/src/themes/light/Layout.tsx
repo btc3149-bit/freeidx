@@ -10,7 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-import { GroupId, AVAILABLE_LOCALES, NATIVE_LANG_NAMES } from '@freeidx/shared';
+import { GroupId, AVAILABLE_LOCALES, NATIVE_LANG_NAMES, siteTitleOf } from '@freeidx/shared';
 import { useAuth } from '../../store/auth';
 import { useAuthModal } from '../../store/authModal';
 import { AuthModal } from '../../components/AuthModal';
@@ -24,11 +24,12 @@ import {
   useLocalizedSetting,
 } from '../../lib/i18n';
 import { Avatar } from '../../components/Avatar';
-import { Icon, type IconName } from '../../components/icons';
+import { Icon, isIconName, type IconName } from '../../components/icons';
 import { InsertCode, useInsertCodes } from '../../components/InsertCode';
 import { Button, cx } from '../../components/ui';
 import { useApplyTheme, useLight, useThemeMode } from '../../store/theme';
 import { ThemeSlot } from '../../lib/theme/slots';
+import { SiteLogo } from '../../components/SiteLogo';
 
 /** 导航项（.navbar-nav>.nav-item>.nav-link：px-4 常规 #6c757d，激活主色） */
 function NavItem({
@@ -38,6 +39,7 @@ function NavItem({
   external,
   onClick,
   compact,
+  icon,
 }: {
   to: string;
   label: string;
@@ -45,6 +47,8 @@ function NavItem({
   external?: boolean;
   onClick?: () => void;
   compact?: boolean;
+  /** 首位固定入口（首页/发现/排行）带图标；后台「导航栏设置」里给自定义项配了图标时同样生效 */
+  icon?: IconName;
 }) {
   const cls = cx(
     'flex items-center gap-1.5 whitespace-nowrap transition-colors',
@@ -53,7 +57,16 @@ function NavItem({
   );
   const inner = (
     <>
-      {external && <Icon name="link" className="size-3.5 shrink-0 opacity-70" />}
+      {/* 自定义图标优先；没配图标时，外部链接才补外链小图标（两个一起画会太挤） */}
+      {icon ? (
+        <Icon
+          name={icon}
+          className={cx('shrink-0', compact ? 'size-3.5' : 'size-[17px]', active ? 'opacity-100' : 'opacity-80')}
+          aria-hidden="true"
+        />
+      ) : (
+        external && <Icon name="link" className="size-3.5 shrink-0 opacity-70" />
+      )}
       {label}
     </>
   );
@@ -455,9 +468,17 @@ export function Layout({ children }: { children?: ReactNode }) {
     setDrawer(false);
   }, [pathname]);
 
+  /**
+   * 标签页标题 = 「站点名 - 一句话定位」，定位短语取 **desc**（SEO 字段）而非 brief（富文本，会带标签、超长被截断）。
+   * 与 Worker 壳页注入（injectShell）、爬虫预渲染（newPageMeta）共用 shared/site-text.siteTitleOf，
+   * 三方逐字一致，不会出现「首帧是一个标题、JS 就绪后变另一个」。
+   */
+  /* setting 由 useLocalizedSetting 按 [setting, lang] 记忆化，引用稳定 → 语言切换或配置变更才重算 */
+  const siteTitle = useMemo(() => (setting ? siteTitleOf(setting) : '319解说'), [setting]);
+
   useEffect(() => {
-    document.title = setting?.sitename || '319解说';
-  }, [pathname, setting?.sitename]);
+    document.title = siteTitle || '319解说';
+  }, [pathname, siteTitle]);
 
   /* 顶栏导航与一级版块均为派生数据：Layout 在每个页面常驻、路由与 store 变化都会重渲染，
      故按来源引用记忆化；原 topForums 用 filter + some 为 O(版块数²)，改为 Set 查找 O(n)。 */
@@ -482,15 +503,21 @@ export function Layout({ children }: { children?: ReactNode }) {
   const homeActive = pathname === '/' || pathname.startsWith('/page');
   const discActive = pathname.startsWith('/discovery');
   const rankActive = pathname.startsWith('/rank');
-  /* 自定义导航项：label 是默认名称，命中当前语言的 labels 则覆盖（后台「导航栏设置」可配） */
+  /* 自定义导航项：label 是默认名称，命中当前语言的 labels 则覆盖（后台「导航栏设置」可配）；
+     icon 同样来自后台配置，渲染前按图标集白名单校验（历史数据/改名后的无效名 = 只显示名称） */
   const forumItems =
     customNav.length > 0
-      ? customNav.map((n) => ({ ...n, label: lname(n.label, n.labels) }))
+      ? customNav.map((n) => ({
+          ...n,
+          label: lname(n.label, n.labels),
+          icon: isIconName(n.icon) ? n.icon : undefined,
+        }))
       : topForums.map((f) => ({
           label: fname(f),
           url: `/forum/${f.fid}`,
           sort: f.rank,
           on: 1 as const,
+          icon: undefined as IconName | undefined,
         }));
   const contact: IconName[] = ['message', 'comment', 'envelope'];
   /** 发现页显示名（可后台自定义；缺省回落 i18n「发现」） */
@@ -527,31 +554,23 @@ export function Layout({ children }: { children?: ReactNode }) {
                 className="flex shrink-0 items-center"
                 aria-label={setting?.sitename || '319解说'}
               >
-                {setting?.logo_url ? (
-                  <img
-                    src={String(setting.logo_url)}
-                    alt={setting.sitename}
-                    className="h-[42px] w-auto max-w-none"
-                  />
-                ) : (
-                  <span className="text-xl font-bold tracking-tight text-brand">
-                    {setting?.sitename || '319解说'}
-                  </span>
-                )}
+                {/* 后台未上传 logo 时用内置默认 logo 图兜底，不再回退文字站名 */}
+                <SiteLogo setting={setting} className="h-[42px] w-auto max-w-none" />
               </Link>
               <nav
                 className="ml-4 flex h-full min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 aria-label={t('forum_nav')}
               >
-                <NavItem to="/" label={t('home')} active={homeActive} />
+                <NavItem to="/" label={t('home')} active={homeActive} icon="home" />
                 {light.enabled && light.discPage && (
-                  <NavItem to="/discovery" label={discLabel} active={discActive} />
+                  <NavItem to="/discovery" label={discLabel} active={discActive} icon="trending_up" />
                 )}
                 {forumItems.slice(0, 8).map((f) => (
                   <NavItem
                     key={f.url}
                     to={f.url}
                     label={f.label}
+                    icon={f.icon}
                     active={
                       pathname === f.url ||
                       pathname.startsWith(`${f.url}/`) ||
@@ -560,7 +579,7 @@ export function Layout({ children }: { children?: ReactNode }) {
                     external={/^https?:\/\//i.test(f.url)}
                   />
                 ))}
-                <NavItem to="/rank" label={t('ranking_short')} active={rankActive} />
+                <NavItem to="/rank" label={t('ranking_short')} active={rankActive} icon="trophy" />
                 {light.links.map((l) => (
                   <NavItem
                     key={`${l.name}-${l.url}`}
@@ -674,21 +693,22 @@ export function Layout({ children }: { children?: ReactNode }) {
                 className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 aria-label={t('forum_nav')}
               >
-                <NavItem to="/" label={t('home')} active={homeActive} compact />
+                <NavItem to="/" label={t('home')} active={homeActive} compact icon="home" />
                 {light.enabled && light.discPage && (
-                  <NavItem to="/discovery" label={discLabel} active={discActive} compact />
+                  <NavItem to="/discovery" label={discLabel} active={discActive} compact icon="trending_up" />
                 )}
                 {forumItems.slice(0, 6).map((f) => (
                   <NavItem
                     key={f.url}
                     to={f.url}
                     label={f.label}
+                    icon={f.icon}
                     active={pathname.startsWith(f.url)}
                     compact
                     external={/^https?:\/\//i.test(f.url)}
                   />
                 ))}
-                <NavItem to="/rank" label={t('ranking_short')} active={rankActive} compact />
+                <NavItem to="/rank" label={t('ranking_short')} active={rankActive} compact icon="trophy" />
               </nav>
               {light.darkMode && <ThemeSwitch />}
               <button
@@ -881,18 +901,9 @@ export function Layout({ children }: { children?: ReactNode }) {
             <InsertCode html={insertCodes.footer_start_htm} />
             <div className="flex flex-wrap items-start justify-between gap-4 max-sm:flex-col max-sm:items-center max-sm:text-center">
               <div className="min-w-0">
-                {light.footerIconShow &&
-                  (setting?.logo_url ? (
-                    <img
-                      src={String(setting.logo_url)}
-                      alt={setting.sitename}
-                      className="mb-2 block h-9 w-auto"
-                    />
-                  ) : (
-                    <span className="mb-2 block text-base font-bold text-brand">
-                      {setting?.sitename || '319解说'}
-                    </span>
-                  ))}
+                {light.footerIconShow && (
+                  <SiteLogo setting={setting} className="mb-2 block h-9 w-auto" />
+                )}
                 <p className="text-sm leading-[26px] text-foreground">
                   {setting?.brief || t('no_brief_yet')}
                 </p>
