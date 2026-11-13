@@ -194,7 +194,7 @@ jobs:
             echo "pwd=$(pwd) DIR=$DIR"; ls -la "$DIR" 2>&1 | head -25
             echo "wrangler.toml: $([ -f "$DIR/wrangler.toml" ] && echo yes || echo no)"
             echo "npx: $(command -v npx || echo MISSING) | node: $(node -v 2>&1)"
-            echo "--- 当前 [assets] 段 ---"; grep -A6 -E "^[[]assets[]]" "$DIR/wrangler.toml" 2>&1 | head -10
+            echo "--- 当前 [assets] 段 ---"; grep -A6 -E "^[[]assets[]]" "$DIR/wrangler.toml" 2>&1 | head -10 || true
             echo "--- dist 目录 ---"; ls -la "$DIR"/dist 2>&1 | head -5 || true; echo "--- ../mail-vue/dist（可选）---"; ls -la ../mail-vue/dist 2>&1 | head -5 || true
             echo "---------------------"
             (cd "$DIR" && CLOUDFLARE_API_TOKEN=$CF CLOUDFLARE_ACCOUNT_ID="$TARGET_ACCOUNT" npx wrangler deploy 2>&1) | tee -a /tmp/deploy.log
