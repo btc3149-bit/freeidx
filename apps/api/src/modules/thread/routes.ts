@@ -28,6 +28,7 @@ import {
   canUpdatePost,
   forumAccessMod,
   forumAccessUser,
+  forumListAccessFilter,
   threadListAccessFilter,
 } from '../../core/access';
 import type { AccessCtx } from '../../core/access';
@@ -188,7 +189,19 @@ function readableFids(ctx: AccessCtx, forumlist: Record<number, { fid: number }>
 
 async function queryThreadPage(
   db: D1b,
-  opts: { fids: number[]; col: 'tid' | 'lastpid'; digest: boolean; before?: number; size: number; page?: number; tag?: string; lang?: string },
+  opts: {
+    fids: number[];
+    col: 'tid' | 'lastpid';
+    digest: boolean;
+    before?: number;
+    size: number;
+    page?: number;
+    tag?: string;
+    lang?: string;
+    /** 访问者 uid + 审核位：用于把 ok 可见性下推到 SQL，避免取满 size 条后再过滤导致分页空洞 */
+    viewerUid: number;
+    seeCheck: boolean;
+  },
 ): Promise<ThreadRow[]> {
   if (!opts.fids.length) return [];
   const ph = opts.fids.map(() => '?').join(',');
@@ -198,42 +211,72 @@ async function queryThreadPage(
   /* 内容语言筛选：等值命中（lang 为空串的存量帖不参与任何语言过滤，需先回填） */
   const langCond = opts.lang ? ' AND lang = ?' : '';
   const langParams = opts.lang ? [opts.lang] : [];
+  /*
+   * ok 可见性下推（与 canSeeUnapproved 同口径）：
+   *  - 审核位：可见待审/被拒（ok<>-2），回收站仍只在回收站入口展示；
+   *  - 普通访问者：仅 ok=1，外加作者本人可看到自己未过审/被拒的内容（uid=0 的游客不会命中）。
+   * 不下推时，待审/回收站行会占满 LIMIT 配额并在 JS 层被剔除，造成「本页条数不足、
+   * nextCursor 指向不可见行、下一页漏帖/重复」。
+   */
+  const okCond = opts.seeCheck ? ' AND ok <> -2' : ' AND (ok = 1 OR (uid = ? AND ok <> -2))';
+  const okParams = opts.seeCheck ? [] : [opts.viewerUid];
   // 编号分页器（?page=N）走浅层 OFFSET，与主题详情同一语义；游标 before_ 优先（无限滚动）。
   if (opts.before == null && (opts.page ?? 1) > 1) {
     const off = shallowOffset(opts.page!, opts.size);
     const sql =
-      `SELECT ${THREAD_LIST_COLS} FROM ${T} WHERE fid IN (${ph}) ` +
+      `SELECT ${THREAD_LIST_COLS} FROM ${T} WHERE fid IN (${ph})${okCond} ` +
       (opts.digest ? 'AND digest > 0 ' : '') +
       tagCond +
       langCond +
       ` ORDER BY ${opts.col} DESC ${off.sql}`;
-    const r = await db.prepare<ThreadRow>(sql).bind(...opts.fids, ...tagParams, ...langParams, ...off.params).all();
+    const r = await db
+      .prepare<ThreadRow>(sql)
+      .bind(...opts.fids, ...okParams, ...tagParams, ...langParams, ...off.params)
+      .all();
     return r.results;
   }
   const cur = cursorCond({ column: opts.col, size: opts.size, before: opts.before, desc: true });
   const sql =
-    `SELECT ${THREAD_LIST_COLS} FROM ${T} WHERE fid IN (${ph}) ${cur.where}` +
+    `SELECT ${THREAD_LIST_COLS} FROM ${T} WHERE fid IN (${ph})${okCond} ${cur.where}` +
     (opts.digest ? ' AND digest > 0' : '') +
     tagCond +
     langCond +
     ` ${cur.order} LIMIT ?`;
   const r = await db
     .prepare<ThreadRow>(sql)
-    .bind(...opts.fids, ...cur.params, ...tagParams, ...langParams, opts.size)
+    .bind(...opts.fids, ...okParams, ...cur.params, ...tagParams, ...langParams, opts.size)
     .all();
   return r.results;
 }
 
-/** 置顶合并（§D.2）：首页并全局置顶 top=3；版块页并版块置顶 top∈1..2；语言筛选时置顶帖同样受语言约束 */
-async function queryTopThreads(db: D1b, fid: number, readable: Set<number>, lang?: string): Promise<ThreadRow[]> {
-  const cond = fid === 0 ? 'tt.top = 3' : 'tt.fid = ? AND tt.top BETWEEN 1 AND 2';
+/**
+ * 置顶合并（§D.2）：首页并全站置顶（top=3）与各版块置顶（top∈1..2）；版块页并本版块全部置顶（含 top=3）。
+ * 口径与前端置顶徽章一致——徽章对 top∈{1,2,3} 一律显示「置顶」，列表排序必须同样前置，
+ * 否则本版置顶在「最新」页只有徽章、顺序不变（用户视角=置顶无效）。
+ * 排序：级别优先（3 在 1/2 之前）→ 同级按置顶时间倒序（0034 的 top_at，后置顶的靠前）
+ * → 存量行 top_at=0 时回落到 tid DESC，与升级前一致。
+ */
+async function queryTopThreads(
+  db: D1b,
+  fid: number,
+  readable: Set<number>,
+  lang: string | undefined,
+  viewerUid: number,
+  seeCheck: boolean,
+): Promise<ThreadRow[]> {
+  const cond = fid === 0 ? 'tt.top >= 1' : 'tt.fid = ? AND tt.top >= 1';
   const params: Array<number | string> = fid === 0 ? [] : [fid];
+  /* 参数次序必须与 SQL 占位符次序（cond → okCond → langCond）严格一致，
+     否则语言筛选下 t.uid 会绑到语言串、t.lang 会绑到 uid，置顶块直接查空 */
+  const okCond = seeCheck ? ' AND t.ok <> -2' : ' AND (t.ok = 1 OR (t.uid = ? AND t.ok <> -2))';
+  if (!seeCheck) params.push(viewerUid);
   const langCond = lang ? ' AND t.lang = ?' : '';
   if (lang) params.push(lang);
   const r = await db
     .prepare<ThreadRow>(
       `SELECT ${THREAD_LIST_COLS_T} FROM bbs_thread_top tt JOIN ${T} t ON t.tid = tt.tid
-       WHERE ${cond}${langCond} ORDER BY tt.top DESC, t.tid DESC LIMIT 30`,
+       WHERE ${cond}${okCond}${langCond}
+       ORDER BY tt.top DESC, tt.top_at DESC, t.tid DESC LIMIT 30`,
     )
     .bind(...params)
     .all();
@@ -254,6 +297,8 @@ async function threadListHandler(c: Context<ReadEnv>, fid: number) {
       loadSetting(cache, db),
     ]);
     const ctx = makeAccessCtx(viewer, forumlist, grouplist);
+    // 审核可见性需要在 SQL 之前确定（ok 条件下推，避免分页空洞）
+    const seeCheck = hasSeeCheck(grouplist[viewer.gid]);
     const col =
       fid > 0
         ? orderCol(c.req.query('orderby'), forumlist[fid]?.orderby ?? 0)
@@ -270,11 +315,11 @@ async function threadListHandler(c: Context<ReadEnv>, fid: number) {
     if (fid > 0) {
       if (!forumlist[fid]) throw new AppError(Code.NOT_FOUND, t('common.forumNotFound'));
       if (!readable.includes(fid)) throw new AppError(Code.NO_PERMISSION, t('common.groupPermDenied'));
-      tasks.push(queryThreadPage(db, { fids: [fid], col, digest, before, size, page, tag, lang }));
+      tasks.push(queryThreadPage(db, { fids: [fid], col, digest, before, size, page, tag, lang, viewerUid: viewer.uid, seeCheck }));
     } else {
-      tasks.push(queryThreadPage(db, { fids: readable, col, digest, before, size, page, tag, lang }));
+      tasks.push(queryThreadPage(db, { fids: readable, col, digest, before, size, page, tag, lang, viewerUid: viewer.uid, seeCheck }));
     }
-    if (page === 1 && !digest) tasks.push(queryTopThreads(db, fid, new Set(readable), lang));
+    if (page === 1 && !digest) tasks.push(queryTopThreads(db, fid, new Set(readable), lang, viewer.uid, seeCheck));
     const results = await Promise.all(tasks);
     const normal = results[0] ?? [];
     const tops = results[1] ?? [];
@@ -282,11 +327,15 @@ async function threadListHandler(c: Context<ReadEnv>, fid: number) {
     const merged = [...tops, ...normal.filter((t) => !tops.some((x) => x.tid === t.tid))];
     // 作者 V 头衔 + 预设头像按页批量一次补查（随行下发，仅激活者带字段）
     const extras = await fetchUserExtrasMap(db, merged.map((t) => Number(t.uid)));
-    // 审核过滤（ok!=1 且非 see_check 组且非作者 → 剔除）
-    const seeCheck = hasSeeCheck(grouplist[viewer.gid]);
+    // 兜底二次过滤（SQL 已下推 ok 条件；这里防 forumlist/权限判定与 SQL 口径漂移）
+    const canSee = (t: ThreadRow) =>
+      canSeeUnapproved(Number(t.ok), { seeCheck, isAuthor: Number(t.uid) === viewer.uid });
     const list = threadListAccessFilter(ctx, merged)
-      .filter((t) => canSeeUnapproved(Number(t.ok), { seeCheck, isAuthor: Number(t.uid) === viewer.uid }))
+      .filter(canSee)
       .map((t) => attachAuthorExtras(toThreadItem(t), extras.get(Number(t.uid))));
+    // 游标必须取「本页最后一条可见的普通主题」：原实现取过滤前的 normal 末行，
+    // 若该行是待审/回收内容，下一页会以它为 before 而重复/跳过。
+    const normalVisible = threadListAccessFilter(ctx, normal).filter(canSee);
     const total =
       fid > 0 ? forumlist[fid]?.threads ?? 0 : readable.reduce((s, f) => s + (forumlist[f]?.threads ?? 0), 0);
     return ok(c, 'ok', {
@@ -295,7 +344,7 @@ async function threadListHandler(c: Context<ReadEnv>, fid: number) {
         page,
         size,
         totalPage: totalPageOf(total, size),
-        nextCursor: normal.at(-1)?.[col],
+        nextCursor: normalVisible.at(-1)?.[col] ?? undefined,
         // 游标列名（tid | lastpid，随 orderby/setting 变）：前端须据此拼 before_<cursorCol>，否则深翻失效
         cursorCol: col,
         ...(fid > 0 && forumlist[fid]
@@ -350,6 +399,33 @@ export function threadRoutes(): Hono<ReadEnv> {
   app.get('/api/threads', (c) => threadListHandler(c, intParam(c.req.query('fid'), 0)));
 
   app.get('/api/forums/:fid/threads', (c) => threadListHandler(c, intParam(c.req.param('fid'))));
+
+  /**
+   * GET /api/forums/briefs —— 版块简介多语言（0028）的**按需**下发。
+   *
+   * 为什么单独拆出来：bootstrap 是全站首屏硬依赖，实测 73KB 里 38.7KB 是 28 个版块 × 10 语言的
+   * brief_i18n（gzip 后 15.5KB，占整包 gzip 的 66%），而它的唯一消费方只有「发现页 · 全部版块」网格。
+   * 拆出后 bootstrap 的 gzip 从 23.5KB 降到 10.1KB；本端点只在发现页被打开时才请求，
+   * 且走边缘缓存（API_TTL 300s）——命中后就是 1 个 RTT、零 D1。
+   *
+   * 口径：
+   *  - 只返回**当前访问者可见**的版块（与 bootstrap 同一 forumListAccessFilter），
+   *    私密版块的简介不得经此端点泄漏；
+   *  - `brief_i18n` 为空的版块不下发（前端回退单值 brief），避免下发一堆空对象。
+   */
+  app.get('/api/forums/briefs', async (c) => {
+    const { db, cache } = core(c);
+    const [forumlist, grouplist, viewer] = await Promise.all([
+      loadForumlist(cache, db),
+      loadGrouplist(cache, db),
+      loadViewer(cache, db, c),
+    ]);
+    const visible = forumListAccessFilter(forumlist, viewer.gid, grouplist);
+    const list = Object.values(visible)
+      .map((f) => ({ fid: f.fid, briefI18n: normNameI18n(f.brief_i18n) }))
+      .filter((f) => Object.keys(f.briefI18n).length > 0);
+    return ok(c, 'ok', { data: { list } });
+  });
 
   /**
    * 站内搜索（页头搜索框落点，idx_search）：range=thread（默认，仅标题）| all（标题+正文）| user（用户名）。
@@ -427,10 +503,13 @@ export function threadRoutes(): Hono<ReadEnv> {
     const match = conds.length ? `(${conds.join(' AND ')})` : '1=0';
     const langCond = lang ? ' AND lang = ?' : '';
     const langParams = lang ? [lang] : [];
-    const where = `WHERE ${match} AND fid IN (${readable.map(() => '?').join(',')})${langCond}`;
+    // ok 可见性下推（与列表同口径）：COUNT 与取数必须一致，否则 totalPage 与实际可翻页数不符
+    const okCond = seeCheck ? ` AND ${T}.ok <> -2` : ` AND (${T}.ok = 1 OR (${T}.uid = ? AND ${T}.ok <> -2))`;
+    const okParams = seeCheck ? [] : [viewer.uid];
+    const where = `WHERE ${match} AND fid IN (${readable.map(() => '?').join(',')})${okCond}${langCond}`;
     const cnt = await db
       .prepare<{ c: number }>(`SELECT COUNT(*) AS c FROM ${T} ${where}`)
-      .bind(...matchParams, ...readable, ...langParams)
+      .bind(...matchParams, ...okParams, ...readable, ...langParams)
       .first<{ c: number }>();
     const total = Number(cnt?.c ?? 0);
     const off = shallowOffset(page, size);
@@ -443,7 +522,7 @@ export function threadRoutes(): Hono<ReadEnv> {
       .prepare<ThreadRow & { snippet_raw?: string | null }>(
         `SELECT ${THREAD_LIST_COLS}${snippetSql} FROM ${T} ${where} ORDER BY tid DESC ${off.sql}`,
       )
-      .bind(...(snippetSql ? [termLikes[0]] : []), ...matchParams, ...readable, ...langParams, ...off.params)
+      .bind(...(snippetSql ? [termLikes[0]] : []), ...matchParams, ...okParams, ...readable, ...langParams, ...off.params)
       .all();
 
     // 作者 V 头衔 + 预设头像按页批量一次补查（随行下发，仅激活者带字段）
@@ -485,10 +564,36 @@ export function threadRoutes(): Hono<ReadEnv> {
     ]);
     const ctx = makeAccessCtx(viewer, forumlist, grouplist);
 
-    const thread = await db
-      .prepare<ThreadDetailRow>(`SELECT ${THREAD_DETAIL_COLS} FROM ${T} WHERE tid = ?`)
-      .bind(tid)
-      .first<ThreadDetailRow>();
+    /**
+     * 读路径批量化（§6.4「聚合接口一律 DB.batch」）：原实现是 8 轮**串行** D1 往返
+     * （thread → like/fav → posts → post_like → 首帖正文 → paylist → attach → quoted → users → 上下篇），
+     * 冷路径实测 0.6–0.8s（每轮约 50–80ms）。改成 3~4 批：
+     *   ① 主题本体 + 点赞/收藏计数（互不依赖）
+     *   ② 楼层（pids 是后续批次与 IN 列表的输入，无法再合并）
+     *   ③ 楼层点赞 + 附件 + 引用 + 上下篇 + 本页作者 + 首帖正文（能合并的都进来）
+     *   ④ 仅当引用作者不在本页作者里、或付费帖需要查购买记录时才发
+     * 权限口径、ok 下推、付费墙判定与改动前逐条一致（见各处注释）。
+     * `D1b.batch()` 计 1 次子请求（`test/db.budget.test.ts` 有断言），因此子请求数从 ~8 降到 ~4。
+     */
+    const rowsAt = (rs: { results?: unknown[] }[], i: number): Array<Record<string, unknown>> =>
+      (rs[i]?.results ?? []) as Array<Record<string, unknown>>;
+    const rowAt = (rs: { results?: unknown[] }[], i: number): Record<string, unknown> | null =>
+      ((rs[i]?.results ?? [])[0] as Record<string, unknown> | undefined) ?? null;
+
+    /* 批 ①：主题本体 + 点赞/收藏计数（A4/A5：bbs_like/bbs_favorite 实时 COUNT，按 tid 走索引） */
+    const aStmts: Stmt[] = [
+      db.prepare(`SELECT ${THREAD_DETAIL_COLS} FROM ${T} WHERE tid = ?`).bind(tid) as unknown as Stmt,
+      db.prepare('SELECT COUNT(*) AS c FROM bbs_like WHERE tid = ?').bind(tid) as unknown as Stmt,
+      db.prepare('SELECT COUNT(*) AS c FROM bbs_favorite WHERE tid = ?').bind(tid) as unknown as Stmt,
+    ];
+    if (viewer.uid > 0) {
+      aStmts.push(db.prepare('SELECT 1 AS x FROM bbs_like WHERE uid = ? AND tid = ?').bind(viewer.uid, tid) as unknown as Stmt);
+      aStmts.push(
+        db.prepare('SELECT 1 AS x FROM bbs_favorite WHERE uid = ? AND tid = ?').bind(viewer.uid, tid) as unknown as Stmt,
+      );
+    }
+    const aRes = await db.batch(aStmts);
+    const thread = rowAt(aRes, 0) as ThreadDetailRow | null;
     if (!thread) throw new AppError(Code.NOT_FOUND, t('common.threadNotFoundOrDeleted'));
     const forum = forumlist[thread.fid];
     if (!forum || !forumAccessUser(ctx, thread.fid, 'allowread'))
@@ -506,89 +611,110 @@ export function threadRoutes(): Hono<ReadEnv> {
       );
     }
 
-    // 点赞/收藏计数 + 当前访问者态（A4/A5，bbs_like/bbs_favorite 实时 COUNT）
-    const [likeCnt, favCnt, likedRow, favRow] = await Promise.all([
-      db.prepare<{ c: number }>('SELECT COUNT(*) AS c FROM bbs_like WHERE tid = ?').bind(tid).first<{ c: number }>(),
-      db.prepare<{ c: number }>('SELECT COUNT(*) AS c FROM bbs_favorite WHERE tid = ?').bind(tid).first<{ c: number }>(),
-      viewer.uid > 0
-        ? db.prepare<{ x: number }>('SELECT 1 AS x FROM bbs_like WHERE uid = ? AND tid = ?').bind(viewer.uid, tid).first<{ x: number }>()
-        : Promise.resolve(null),
-      viewer.uid > 0
-        ? db.prepare<{ x: number }>('SELECT 1 AS x FROM bbs_favorite WHERE uid = ? AND tid = ?').bind(viewer.uid, tid).first<{ x: number }>()
-        : Promise.resolve(null),
-    ]);
+    // 点赞/收藏计数 + 当前访问者态（批 ① 的第 2~5 条，见上方批量化说明）
+    const likeCnt = rowAt(aRes, 1);
+    const favCnt = rowAt(aRes, 2);
+    const likedRow = viewer.uid > 0 ? rowAt(aRes, 3) : null;
+    const favRow = viewer.uid > 0 ? rowAt(aRes, 4) : null;
 
     const off = shallowOffset(page, size);
+    // ok 可见性下推：OFFSET 分页若先取后滤会错位漏楼层（本页少几条、下一页跳过被滤行）；
+    // 口径与 canSeeUnapproved 一致：审核员看非回收站，普通访问者看 ok=1 + 自己的未过审内容。
+    const postOkCond = seeCheck ? ' AND ok <> -2' : ' AND (ok = 1 OR (uid = ? AND ok <> -2))';
+    const postOkParams = seeCheck ? [] : [viewer.uid];
     const postsR = await db
-      .prepare<PostRow>(`SELECT ${POST_PAGE_COLS} FROM ${P} WHERE tid = ? ORDER BY pid ASC ${off.sql}`)
-      .bind(tid, ...off.params)
+      .prepare<PostRow>(`SELECT ${POST_PAGE_COLS} FROM ${P} WHERE tid = ?${postOkCond} ORDER BY pid ASC ${off.sql}`)
+      .bind(tid, ...postOkParams, ...off.params)
       .all();
-    // 回帖审核过滤（ok!=1 且非 see_check 组且非作者 → 剔除）
+    // 兜底二次过滤（防 SQL 与权限口径漂移）
     const posts = postsR.results.filter((p) =>
       canSeeUnapproved(Number(p.ok), { seeCheck, isAuthor: Number(p.uid) === viewer.uid }),
     );
     const pids = posts.map((p) => p.pid);
 
-    // 楼层点赞：一次 IN 批量取「各 pid 计数」+「当前访问者已赞集合」（§7 禁 N+1）
-    const postLikeCount = new Map<number, number>();
-    const postLikedSet = new Set<number>();
+    /* 批 ③：楼层点赞 + 附件 + 引用 + 首帖正文 + 上下篇 + 本页作者。
+       全部只依赖 pids / quotePids / tid / fid，一次往返取完（原来这里是 5 轮串行）。
+       口径与改动前逐条一致：点赞按 pid 批量、附件按 pid 批量、引用只取 ok=1、上下篇 ok=1 下推。 */
+    const quotePids = [...new Set(posts.map((p) => p.quotepid).filter((q) => q > 0))];
+    const pageUids = [...new Set([Number(thread.uid), ...posts.map((p) => Number(p.uid))])];
+    /* 付费主题从第 2 页起 posts 不含首帖，必须补查首帖正文判断有没有 [ttPay] 段；
+       否则 hasPayBlocks 恒为 false → purchased 误报 true（详情页第 2 页丢失购买入口）。 */
+    const needFirstFmt =
+      !posts.some((p) => p.isfirst === 1 && p.message_fmt) && page > 1 && Number(thread.content_buy) > 0;
+    const inList = pids.map(() => '?').join(',');
+    const cStmts: Stmt[] = [];
+    const cKind: string[] = [];
+    const pushC = (kind: string, stmt: unknown): void => {
+      cKind.push(kind);
+      cStmts.push(stmt as Stmt);
+    };
     if (pids.length) {
-      const inList = pids.map(() => '?').join(',');
-      const [cntR, mineR] = await Promise.all([
+      pushC(
+        'likeCnt',
+        db.prepare(`SELECT pid, COUNT(*) AS c FROM bbs_post_like WHERE pid IN (${inList}) GROUP BY pid`).bind(...pids),
+      );
+      if (viewer.uid > 0)
+        pushC(
+          'likeMine',
+          db.prepare(`SELECT pid FROM bbs_post_like WHERE uid = ? AND pid IN (${inList})`).bind(viewer.uid, ...pids),
+        );
+      pushC(
+        'attach',
+        // 刻意不取 filename（R2 key）：详情不下发对象 key，防 `/files/attach/*` 匿名直取绕过付费/权限校验
         db
-          .prepare<{ pid: number; c: number }>(`SELECT pid, COUNT(*) AS c FROM bbs_post_like WHERE pid IN (${inList}) GROUP BY pid`)
-          .bind(...pids)
-          .all(),
-        viewer.uid > 0
-          ? db
-              .prepare<{ pid: number }>(`SELECT pid FROM bbs_post_like WHERE uid = ? AND pid IN (${inList})`)
-              .bind(viewer.uid, ...pids)
-              .all()
-          : Promise.resolve(null),
-      ]);
-      for (const r of cntR.results) postLikeCount.set(Number(r.pid), Number(r.c));
-      for (const r of mineR?.results ?? []) postLikedSet.add(Number(r.pid));
-    }
-
-    // 付费主题可见性：
-    // purchased 默认 '1'（content_buy=0 或首帖无 [ttPay] 付费段时视为无需购买）；
-    // content_buy>0 且存在付费段时，仅作者本人 / paylist type=1 已购者可见。
-    // 未购时服务端清空段内正文（仅保留空标记供前台渲染价格/购买按钮），防止直连 API 绕过付费墙。
-    // 付费主题可见性：翻到第 2 页起 posts 不含首帖，必须补查首帖正文判断是否存在 [ttPay] 付费段，
-    // 否则 hasPayBlocks 恒为 false → purchased 误报 true（详情页第 2 页丢失购买入口）。
-    let firstFmt = posts.find((p) => p.isfirst === 1)?.message_fmt ?? '';
-    if (!firstFmt && page > 1 && Number(thread.content_buy) > 0) {
-      const first = await db
-        .prepare<{ message_fmt: string }>(`SELECT message_fmt FROM ${P} WHERE tid = ? AND isfirst = 1`)
-        .bind(tid)
-        .first<{ message_fmt: string }>();
-      firstFmt = String(first?.message_fmt ?? '');
-    }
-    const hasPayBlocks = /\[ttPay\][\s\S]*?\[\/ttPay\]/i.test(firstFmt);
-    let purchased = true;
-    if (Number(thread.content_buy) > 0 && hasPayBlocks) {
-      const paid =
-        viewer.uid > 0
-          ? await db
-              .prepare<{ x: number }>('SELECT 1 AS x FROM bbs_paylist WHERE tid = ? AND uid = ? AND type = 1')
-              .bind(tid, viewer.uid)
-              .first<{ x: number }>()
-          : null;
-      purchased = Boolean(paid) || (viewer.uid > 0 && Number(thread.uid) === viewer.uid);
-    }
-
-    // 附件一次 IN；回帖作者 + 引用作者一次 IN（§7 禁 N+1）
-    const attachR = pids.length
-      ? await db
-          .prepare<AttachRow>(
-            // 刻意不取 filename（R2 key）：详情不下发对象 key，防 `/files/attach/*` 匿名直取绕过付费/权限校验
-            `SELECT aid,pid,orgfilename,filesize,isimage,width,height,downloads,create_date,credits FROM bbs_attach WHERE pid IN (${pids.map(() => '?').join(',')}) ORDER BY aid ASC`,
+          .prepare(
+            `SELECT aid,pid,orgfilename,filesize,isimage,width,height,downloads,create_date,credits FROM bbs_attach WHERE pid IN (${inList}) ORDER BY aid ASC`,
           )
-          .bind(...pids)
-          .all()
-      : null;
+          .bind(...pids),
+      );
+    }
+    if (pageUids.length)
+      pushC(
+        'users',
+        // 主题作者（th 头部头像用）+ 本页回帖作者一次 IN，同查询带出 V 头衔与预设头像（§7 禁 N+1）
+        db
+          .prepare(
+            `SELECT uid,username,avatar,v,avatar_auto FROM bbs_user WHERE uid IN (${pageUids.map(() => '?').join(',')})`,
+          )
+          .bind(...pageUids),
+      );
+    if (quotePids.length)
+      pushC(
+        'quoted',
+        // 引用摘要同样受审核态与付费墙约束：不取未过审楼层正文，摘要剥掉 [ttPay] 付费段，
+        // 防止通过 quotepid 引用把待审/付费内容写进摘要下发给无权用户。
+        db
+          .prepare(
+            `SELECT pid,uid,message_fmt FROM ${P} WHERE ok = 1 AND pid IN (${quotePids.map(() => '?').join(',')})`,
+          )
+          .bind(...quotePids),
+      );
+    pushC(
+      'neighbors',
+      // ok=1 必须下推：否则软删（-2）/待审（0）主题的 tid+subject 会作为「上一篇/下一篇」下发给任意访问者
+      db
+        .prepare(
+          `SELECT tid,subject FROM (SELECT tid,subject FROM ${T} WHERE fid = ? AND ok = 1 AND tid < ? ORDER BY tid DESC LIMIT 1)
+           UNION ALL
+           SELECT tid,subject FROM (SELECT tid,subject FROM ${T} WHERE fid = ? AND ok = 1 AND tid > ? ORDER BY tid ASC LIMIT 1)`,
+        )
+        .bind(thread.fid, tid, thread.fid, tid),
+    );
+    if (needFirstFmt)
+      pushC('firstFmt', db.prepare(`SELECT message_fmt FROM ${P} WHERE tid = ? AND isfirst = 1`).bind(tid));
+    const cRes = await db.batch(cStmts);
+    const takeC = (kind: string): Array<Record<string, unknown>> => {
+      const i = cKind.indexOf(kind);
+      return i < 0 ? [] : rowsAt(cRes, i);
+    };
+
+    const postLikeCount = new Map<number, number>();
+    for (const r of takeC('likeCnt')) postLikeCount.set(Number(r.pid), Number(r.c));
+    const postLikedSet = new Set<number>();
+    for (const r of takeC('likeMine')) postLikedSet.add(Number(r.pid));
+
     const attachesByPid = new Map<number, AttachItem[]>();
-    for (const a of attachR?.results ?? []) {
+    for (const a of takeC('attach') as unknown as AttachRow[]) {
       const item: AttachItem = {
         aid: a.aid,
         tid: thread.tid,
@@ -607,42 +733,72 @@ export function threadRoutes(): Hono<ReadEnv> {
       attachesByPid.set(a.pid, list);
     }
 
-    const quotePids = [...new Set(posts.map((p) => p.quotepid).filter((q) => q > 0))];
-    const quotedR = quotePids.length
-      ? await db
-          .prepare<{ pid: number; uid: number; message_fmt: string }>(
-            // 引用摘要同样受审核态与付费墙约束：不取未过审楼层正文，摘要剥掉 [ttPay] 付费段，
-            // 防止通过 quotepid 引用把待审/付费内容写进摘要下发给无权用户。
-            `SELECT pid,uid,message_fmt FROM ${P} WHERE ok = 1 AND pid IN (${quotePids.map(() => '?').join(',')})`,
-          )
-          .bind(...quotePids)
-          .all()
-      : null;
+    const quotedRows = takeC('quoted') as unknown as Array<{ pid: number; uid: number; message_fmt: string }>;
+    const neighborRows = takeC('neighbors') as unknown as Array<{ tid: number; subject: string }>;
 
-    // 回帖作者 + 引用作者 + 主题作者（th 头部头像用）一次 IN（§7 禁 N+1）；同查询带出 V 头衔与预设头像
-    const uids = [...new Set([Number(thread.uid), ...posts.map((p) => p.uid), ...(quotedR?.results ?? []).map((q) => q.uid)])];
+    const hasPayBlocks = /\[ttPay\][\s\S]*?\[\/ttPay\]/i.test(
+      needFirstFmt
+        ? String(takeC('firstFmt')[0]?.message_fmt ?? '')
+        : (posts.find((p) => p.isfirst === 1)?.message_fmt ?? ''),
+    );
+
+    /* 批 ④：付费帖购买记录 + 引用作者补齐（只在这两种情况下才发；常见情况这一批完全不存在） */
     const usersMap = new Map<number, { username: string; avatar: number; uv: string; avatarAuto: string }>();
-    if (uids.length) {
-      const users = await db
-        .prepare<{ uid: number; username: string; avatar: number; v: string; avatar_auto: string }>(
-          `SELECT uid,username,avatar,v,avatar_auto FROM bbs_user WHERE uid IN (${uids.map(() => '?').join(',')})`,
-        )
-        .bind(...uids)
-        .all();
-      for (const u of users.results) {
-        usersMap.set(u.uid, {
-          username: u.username,
-          avatar: u.avatar,
+    const addUsers = (rows: Array<Record<string, unknown>>): void => {
+      for (const u of rows) {
+        usersMap.set(Number(u.uid), {
+          username: String(u.username ?? ''),
+          avatar: Number(u.avatar ?? 0),
           uv: String(u.v ?? '0'),
-          avatarAuto: avatarAutoOf(Number(u.avatar), u.avatar_auto),
+          avatarAuto: avatarAutoOf(Number(u.avatar), u.avatar_auto as string | null | undefined),
         });
       }
+    };
+    addUsers(takeC('users'));
+
+    const dStmts: Stmt[] = [];
+    const dKind: string[] = [];
+    const pushD = (kind: string, stmt: unknown): void => {
+      dKind.push(kind);
+      dStmts.push(stmt as Stmt);
+    };
+    /* purchased 默认 true（content_buy=0 或首帖无付费段 = 无需购买）；
+       只有 content_buy>0 且确实存在 [ttPay] 段才去查购买记录（游客不查，直接 false）。 */
+    const needPaid = Number(thread.content_buy) > 0 && hasPayBlocks;
+    if (needPaid && viewer.uid > 0)
+      pushD(
+        'paid',
+        db.prepare('SELECT 1 AS x FROM bbs_paylist WHERE tid = ? AND uid = ? AND type = 1').bind(tid, viewer.uid),
+      );
+    /* 引用作者可能不在本页（引用的是别人的楼层）：只补查缺的那几个 */
+    const missingQuoteUids = [...new Set(quotedRows.map((q) => Number(q.uid)))].filter(
+      (u) => u > 0 && !usersMap.has(u),
+    );
+    if (missingQuoteUids.length)
+      pushD(
+        'users',
+        db
+          .prepare(
+            `SELECT uid,username,avatar,v,avatar_auto FROM bbs_user WHERE uid IN (${missingQuoteUids.map(() => '?').join(',')})`,
+          )
+          .bind(...missingQuoteUids),
+      );
+    let paidRow: Record<string, unknown> | null = null;
+    if (dStmts.length) {
+      const dRes = await db.batch(dStmts);
+      dKind.forEach((kind, i) => {
+        if (kind === 'paid') paidRow = rowAt(dRes, i);
+        else if (kind === 'users') addUsers(rowsAt(dRes, i));
+      });
     }
+
+    let purchased = true;
+    if (needPaid) purchased = Boolean(paidRow) || (viewer.uid > 0 && Number(thread.uid) === viewer.uid);
 
     const allowViewIp = !!grouplist[viewer.gid]?.allowviewip;
     const postsOut = posts.map((p) => {
       const author = usersMap.get(p.uid);
-      const quote = quotedR?.results.find((q) => q.pid === p.quotepid);
+      const quote = quotedRows.find((q) => q.pid === p.quotepid);
       const canUpd = canUpdatePost(ctx, thread.fid, p.uid);
       return {
         pid: p.pid,
@@ -685,19 +841,10 @@ export function threadRoutes(): Hono<ReadEnv> {
       };
     });
 
-    // 「上一篇/下一篇」（thread_postlist_before 位）：同版块按 tid 邻接各取一条
-    // （UNION ALL 单语句取两条，省一次 D1 往返；
-    //   是否渲染由前台按 light.preNextThread 开关决定）
-    const neighborsR = await db
-      .prepare<{ tid: number; subject: string }>(
-        `SELECT tid,subject FROM (SELECT tid,subject FROM ${T} WHERE fid = ? AND tid < ? ORDER BY tid DESC LIMIT 1)
-         UNION ALL
-         SELECT tid,subject FROM (SELECT tid,subject FROM ${T} WHERE fid = ? AND tid > ? ORDER BY tid ASC LIMIT 1)`,
-      )
-      .bind(thread.fid, tid, thread.fid, tid)
-      .all();
-    const prevRow = neighborsR.results.find((r) => r.tid < tid) ?? null;
-    const nextRow = neighborsR.results.find((r) => r.tid > tid) ?? null;
+    /* 「上一篇/下一篇」（thread_postlist_before 位）：同版块按 tid 邻接各取一条，
+       已在批 ③ 里用 UNION ALL 单语句取回（是否渲染由前台按 light.preNextThread 开关决定） */
+    const prevRow = neighborRows.find((r) => Number(r.tid) < tid) ?? null;
+    const nextRow = neighborRows.find((r) => Number(r.tid) > tid) ?? null;
 
     // 浏览量异步自增（waitUntil 不占响应路径；受 update_views_on 开关控制）
     if (page === 1 && setting.updateViewsOn) {

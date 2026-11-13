@@ -11,16 +11,24 @@
  *  3. stale-while-revalidate / stale-if-error 对 cache.match/put 无效 → 只用 max-age，
  *     TTL 即最大陈旧窗口；Workers 内无全网络主动失效（cache.delete 只清本机柜），故不承诺写后即时刷新。
  *
- * 覆盖范围：匿名只读 API（API_TTL）+ `/files/*` 公共直链（FILES_PUBLIC 前缀白名单）+ 爬虫预渲染 HTML。
+ * 覆盖范围：匿名只读 API（API_TTL）+ 公共二进制直链（FILES_PUBLIC 前缀白名单 / BINARY_PUBLIC）
+ * + 爬虫预渲染 HTML。
  *
  * 安全性前提：只缓存"游客可判定"的响应——带 Authorization 或登录轨 Cookie（sid/at/admin_at）的请求
- * 一律绕开，未持有 csrf Cookie 的首访请求也绕开。写入门槛为 200 + 无 Set-Cookie + 未声明 no-store：
+ * 一律绕开。首访（尚无 csrf Cookie）同样参与读取**与回填**：游客副本的响应体不含任何 token/个人数据，
+ * 命中时在 HIT 响应上补发随机 csrf Cookie（与 csrf 中间件 GET 分支同口径）。
+ * 写入门槛为 200 + Set-Cookie 仅限 csrf 签发 + 未声明 no-store：
+ * 此前「任何 Set-Cookie 都不写」看似安全，实际让**每个新访客**的 /api/bootstrap 与列表都冷穿透整条
+ * D1 链路，且这次 MISS 的产物也不回填——低流量时段边缘命中率因此接近 0。现在缓存副本会剥掉这条
+ * csrf 头（HIT 分支按需补签），只有真正下发登录轨 Cookie 的响应才继续拒绝写入。
  * Hono 会把路由抛出的 AppError 在链路内转成响应（实测中间件 post-next 仍能拿到），因此错误信封的
  * 不可缓存性由 envelope.ts 统一打 `Cache-Control: no-store` 来保证，而不是靠异常传播。
  */
 import { createMiddleware } from 'hono/factory';
-import { AVAILABLE_LOCALES } from '@freeidx/shared';
+import { setCookie } from 'hono/cookie';
+import { AVAILABLE_LOCALES, RunLevel } from '@freeidx/shared';
 import { acceptLangOf } from '../i18n';
+import { isHttpsRequest } from '../site';
 import type { Env } from '../../types/env';
 import type { D1b } from '../db';
 import type { Cache } from './index';
@@ -28,14 +36,22 @@ import { classifyUserAgent, type UaClass } from '../crawler';
 
 type Bucket = typeof caches.default;
 
-/** 匿名只读接口 → 边缘 TTL（§7 口径：列表 30s，详情 60s） */
+/**
+ * 匿名只读接口 → 边缘 TTL（§7 口径：列表 60s，详情 120s）。
+ *
+ * 首屏三类接口（bootstrap / 列表 / 详情）的 TTL 从 30/30/60 提到 30/60/120：Cache API 副本按机柜
+ * 独立存放，低频站点在 30s 窗口内往往等不到第二个请求，写的副本还没被读到就过期了。60s 的内容陈旧
+ * 对论坛列表可接受（发帖后作者本人刷新会看到旧列表，属既有取舍），换来的是命中率与 TTL 近似线性增长。
+ */
 /** 匿名只读 API 的缓存白名单与 TTL（导出供测试断言「哪些接口必须被缓存、正则不互相抢占」） */
 export const API_TTL: ReadonlyArray<readonly [RegExp, number]> = [
   [/^\/api\/bootstrap$/, 30],
-  [/^\/api\/threads$/, 30],
-  [/^\/api\/forums\/\d+\/threads$/, 30],
+  [/^\/api\/threads$/, 60],
+  [/^\/api\/forums\/\d+\/threads$/, 60],
+  /* 版块简介多语言：发现页按需拉取（bootstrap 已不再背这 15KB gzip）。站点结构低频变更，300s 足够 */
+  [/^\/api\/forums\/briefs$/, 300],
   [/^\/api\/users\/\d+\/(?:threads|posts)$/, 30],
-  [/^\/api\/threads\/\d+$/, 60],
+  [/^\/api\/threads\/\d+$/, 120],
   [/^\/api\/users\/\d+$/, 60],
   /* 右栏/聚合类匿名只读端点：游客每次 PV 都会真打 Worker + D1，扩容前完全没吃到边缘缓存。
    * 全部以 `$` 锚定，避免 /api/threads/\d+ 与 /api/threads/hot-favorites、/:tid/hot-posts 互相抢占；
@@ -56,6 +72,9 @@ export const API_TTL: ReadonlyArray<readonly [RegExp, number]> = [
   [/^\/api\/vip\/plans$/, 30],
   [/^\/api\/payment-providers$/, 30],
   [/^\/api\/checkin$/, 30],
+  /* 相关帖子（related 插件）：游客可判定（仅 ok=1 + 可读版块），与 hot-posts 同档 60s；
+   * 插件启停/配置变更最多 60s 内跟上，与详情页 60s 副本同一陈旧窗口。 */
+  [/^\/api\/related-threads$/, 60],
 ];
 
 /** 爬虫预渲染 HTML 的 TTL（与 §16.1 R2 产物同步，1h） */
@@ -71,6 +90,26 @@ export const BOT_HTML_TTL = 3600;
  * 给 filesProxy 加新前缀时被顺手变成公共缓存。
  */
 const FILES_PUBLIC: ReadonlyArray<RegExp> = [/^\/files\/avatar\//, /^\/files\/forum\//, /^\/files\/site\//];
+
+/**
+ * 走 R2 的**公共图片**接口：附件预览（`?t=1` 为 400px WebP 缩略图）。
+ *
+ * 与 `/files/*` 一样是二进制、与语言无关、URL 即内容：因此共用同一套「共享键 + 保留源头
+ * Cache-Control」的二进制处理（不编 fi-lang / fi-ua，命中时也不剥 max-age，否则浏览器每次都重取图）。
+ * 安全性由接口自身把关：受限期件（待审/付费未购）返回 `private, no-store` 或直接抛错，
+ * `storeEligible()` 一律拒绝；且本路径要求无登录轨 Cookie（`isFileCacheEligible`），
+ * 已购用户的副本不会写进游客缓存。
+ * `/api/attachments/:aid/download` 必须继续在列外：它带扣费与权限语义。
+ */
+const BINARY_PUBLIC: ReadonlyArray<RegExp> = [/^\/api\/attachments\/\d+\/preview$/];
+
+/** 请求里登记了 Set-Cookie 的全部值（Workers 与 Node 均有 getSetCookie；老环境回退单值读取） */
+function setCookieList(h: Headers): string[] {
+  const maybe = h as unknown as { getSetCookie?: () => string[] };
+  if (typeof maybe.getSetCookie === 'function') return maybe.getSetCookie();
+  const single = h.get('set-cookie');
+  return single ? [single] : [];
+}
 
 /** 登录轨 Cookie：出现任一即说明响应可能按用户定制，必须绕开边缘缓存 */
 const PERSONAL_COOKIE = /(?:^|;\s*)(?:sid|at|admin_at)=/;
@@ -113,19 +152,31 @@ function keyUrl(url: string, ua: UaClass, lang?: string): string {
   return u.toString();
 }
 
-function keyRequest(url: string, ua: UaClass, lang?: string): Request {
-  return new Request(keyUrl(url, ua, lang), { method: 'GET' });
+function keyRequest(url: string, ua: UaClass, lang?: string, variant?: 'stale'): Request {
+  const u = new URL(keyUrl(url, ua, lang));
+  if (variant) u.searchParams.set('fi-sw', variant);
+  return new Request(u.toString(), { method: 'GET' });
 }
 
-function withState(res: Response, state: 'HIT' | 'MISS'): Response {
+function withState(res: Response, state: 'HIT' | 'MISS' | 'HIT-STALE'): Response {
   const headers = new Headers(res.headers);
   headers.set('x-edge-cache', state);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-/** 写入门槛：200、未带 Set-Cookie、且响应未声明不可缓存（错误信封由 envelope 统一打 no-store） */
+/**
+ * 写入门槛：200、Set-Cookie **只允许 csrf 签发**、且响应未声明不可缓存（错误信封由 envelope 统一打 no-store）。
+ *
+ * 为什么放宽：csrf 中间件对每个「还没有 csrf Cookie」的 GET 都会签发一条，而此前「有 Set-Cookie 就不写」
+ * 让新访客的响应连回填资格都没有（每个真首访都要冷穿透 D1）。缓存副本会剥掉这条头（见 cachedCopy），
+ * 命中 HIT 时按需补签，语义与 csrf 中间件一致。登录轨 Cookie（sid/at/admin_at）仍一律拒绝——
+ * 被缓存吞掉就是认证态丢失。
+ */
 function storeEligible(res: Response): boolean {
-  if (res.status !== 200 || res.headers.has('set-cookie')) return false;
+  if (res.status !== 200) return false;
+  for (const cookie of setCookieList(res.headers)) {
+    if (!/^\s*csrf=/.test(cookie)) return false;
+  }
   return !/(?:no-store|no-cache|private|max-age=0)/.test((res.headers.get('cache-control') ?? '').toLowerCase());
 }
 
@@ -138,7 +189,10 @@ function storeEligible(res: Response): boolean {
 function cachedCopy(res: Response, ttl: number | undefined, keepCacheControl = false): Response {
   const headers = new Headers(res.headers);
   headers.delete('x-edge-cache');
-  // keepCacheControl（/files/*）：保留源头的 public max-age（含 immutable），仅剥命中标记
+  /* Set-Cookie 不进副本：唯一被放行的 Set-Cookie 是 csrf 签发，而 HIT 分支会给缺 Cookie 的访客
+   * 现场补签一条新的（随机值），因此副本里那条既无用又会让「同一份副本发给所有人」变成隐患。 */
+  headers.delete('set-cookie');
+  // keepCacheControl（/files/* 与公共图片）：保留源头的 public max-age（含 immutable），仅剥命中标记
   if (!keepCacheControl && ttl !== undefined) headers.set('cache-control', `public, max-age=${ttl}`);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
@@ -164,15 +218,50 @@ export function maybeCtx(c: unknown): Waiter | undefined {
 }
 
 /**
- * 参与资格判定：无 Authorization、无登录轨 Cookie（sid/at/admin_at），且已持有 csrf Cookie。
- * 要求 csrf Cookie 是刻意的——它等价于"该访客已完成过一次首访"：
- * 首访响应带 Set-Cookie，按下面的写入门槛必然穿透并签发 csrf Cookie；
- * 此后第二次请求才可能吃到 HIT，于是边缘缓存永远不会吞掉 csrf Cookie 的签发（写链路不受影响）。
+ * 「与访问者无关」的只读端点白名单：即使请求携带登录轨 Cookie 也允许命中/回填边缘缓存。
+ *
+ * 依据：这些响应体里没有任何按 uid/gid 定制的字段（排行榜只有 tid/subject 或 uid/username/avatar；
+ * 注入位/快捷回复是站点级配置；在线数是一个数字），游客副本与登录副本逐字节等价。
+ *
+ * 为什么必须单独开一档：PERSONAL_COOKIE 是「响应可能按用户定制」的保守近似，代价是**登录用户
+ * （含站长）每一次刷新都要冷穿透整条链路**——首页右栏的排行卡各有 1 次 Worker 调用 + 1 次
+ * session 查询 + 1 次 D1，明明数据是全网同值的。放开这一档后，登录用户的右栏聚合接口可直接
+ * 200ms 内从边缘 HIT（TTL 600s/3600s），这是右栏显示速度最直接的改善。
+ *
+ * 边界：**不放**任何做版块可读性过滤的端点（如 /api/threads/hot-favorites、/api/related-threads）——
+ * 它们的结果随 viewer 的 gid 变化，置入本白名单会让登录用户看到游客副本（漏内容）。
  */
-function isCacheEligible(req: { headers: Headers }): boolean {
+const PUBLIC_READONLY: ReadonlyArray<RegExp> = [
+  /^\/api\/rank\/(?:threads|users|forum)$/,
+  /^\/api\/insert-codes$/,
+  /^\/api\/quick-reply-message$/,
+  /^\/api\/online$/,
+];
+
+/**
+ * 参与资格判定：无 Authorization，且（无登录轨 Cookie（sid/at/admin_at）或命中公共只读白名单）即可。
+ * 旧口径额外要求「已持有 csrf Cookie」，等价于把所有真首访挡在边缘缓存之外——每个新访客的
+ * /api/bootstrap 都要冷穿透整条 D1 链路（实测首访 TTFB 2~3s 的主要来源）。csrf 门禁的存在意义
+ * 只是保证 Set-Cookie 签发不被缓存吞掉，现改为 HIT 分支主动补签（见 edgeCache 内注释），
+ * 该前提不再需要。
+ */
+function isCacheEligible(req: { headers: Headers }, path: string): boolean {
   if (req.headers.has('authorization')) return false;
-  const cookie = req.headers.get('cookie') ?? '';
-  return !PERSONAL_COOKIE.test(cookie) && /(?:^|;\s*)csrf=/.test(cookie);
+  if (!PERSONAL_COOKIE.test(req.headers.get('cookie') ?? '')) return true;
+  return PUBLIC_READONLY.some((re) => re.test(path));
+}
+
+/** csrf Cookie 名（与 middleware/csrf.ts 同口径） */
+const CSRF_COOKIE = /(?:^|;\s*)csrf=/;
+
+/**
+ * 随机 csrf token（16 字节 hex）：镜像 middleware/csrf.ts 的 randomToken。
+ * 不直接反向 import middleware（core 层不依赖 middleware），两处改动需同步。
+ */
+function randomToken(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -186,41 +275,241 @@ function isFileCacheEligible(req: { headers: Headers }): boolean {
   return !PERSONAL_COOKIE.test(req.headers.get('cookie') ?? '');
 }
 
+/* ==================== 手动 stale-while-revalidate（双副本 + 内部重放） ==================== */
+
+/**
+ * 陈旧窗口（秒）：fresh 副本过期后，这份副本还能被「先返回、后刷新」沿用多久。
+ *
+ * 为什么需要：Cache API **不支持** `stale-while-revalidate` / `stale-if-error` 指令
+ * （官方文档：`cache.put`/`cache.match` 不解析这两个指令，只有 fetch 路径才认）。
+ * 而列表/详情/首屏接口的冷路径实测 0.3–0.8s（详情约 8 轮 D1 往返），一个副本过期后
+ * 「恰好第一个访问的人」就要完整付这笔钱。这里用双副本 + 内部重放实现同等语义：
+ *  - fresh 副本：TTL 同 API_TTL，命中即返回；
+ *  - stale 副本：TTL = fresh + 本窗口，只在 fresh 缺失时兜底，命中即返回旧值并在 waitUntil 里重放一次；
+ *    重放会**同时刷新两份副本**，因此活跃时段服务出去的内容年龄 ≈ fresh TTL（不是 TTL+窗口）；
+ *  - 只有首屏三类接口 + 版块简介开 SWR，长尾聚合接口不参与（写放大没有必要）。
+ *
+ * 代价（必须接受再开）：连续无人访问的静默期之后，第一个访客可能拿到「上一份全量 MISS 时的内容」，
+ * 最坏陈旧 = fresh TTL + 本窗口（首屏 90s / 列表 180s / 详情 240s）。
+ * 登录用户不吃缓存（响应含 me/点赞态），作者与版主看到的始终是实时数据；游客侧与既有 TTL 语义同类。
+ */
+export const SWR_STALE: ReadonlyArray<readonly [RegExp, number]> = [
+  [/^\/api\/bootstrap$/, 60],
+  [/^\/api\/threads$/, 120],
+  [/^\/api\/forums\/\d+\/threads$/, 120],
+  [/^\/api\/threads\/\d+$/, 120],
+  [/^\/api\/forums\/briefs$/, 120],
+];
+
+/**
+ * 内部重放用的派发器：index.ts 在路由装配完成后注入 `app.fetch`。
+ * core 层不反向 import Hono 应用（避免循环依赖），也避免把 SWR 变成网络子请求
+ * （自己 fetch 自己还要处理 zone/缓存键，且多一次真实往返）。
+ */
+type Dispatcher = (request: Request, env: Env, ctx: Waiter | undefined) => Promise<Response>;
+let dispatcher: Dispatcher | null = null;
+export function setSwrDispatcher(fn: Dispatcher): void {
+  dispatcher = fn;
+}
+
+/** 单飞：同一键在同一 isolate 内只跑一次后台刷新，避免并发请求各刷一遍（惊群） */
+const revalidating = new Set<string>();
+
+/**
+ * 后台重放：用**同一套请求头**（语言/Cookie/UA 决定缓存键与内容）再走一遍应用，
+ * 结果由正常 MISS 路径写回 fresh 副本；本函数不消费响应体以外的任何东西。
+ *
+ * `x-fi-revalidate` 是递归闸门：内层请求看到它就不再**读** stale 副本（否则「陈旧 → 重放 →
+ * 又读陈旧」自激），但仍把两份副本一起写回，让 stale 的内容跟着一起变新。
+ * 必须消费响应体，否则连接悬挂到 waitUntil 超时。
+ */
+function revalidate(c: { env: Env }, raw: Request, id: string): void {
+  if (!dispatcher || revalidating.has(id)) return;
+  revalidating.add(id);
+  const headers = new Headers();
+  for (const name of ['cookie', 'accept-language', 'user-agent']) {
+    const v = raw.headers.get(name);
+    if (v) headers.set(name, v);
+  }
+  headers.set('x-fi-revalidate', '1');
+  const ctx = maybeCtx(c);
+  const job = dispatcher(new Request(raw.url, { method: 'GET', headers }), c.env, ctx)
+    .then((res) => res.text().then(() => undefined))
+    .catch(() => undefined)
+    .finally(() => revalidating.delete(id));
+  wait(job, ctx);
+}
+
 export function edgeCache() {
   return createMiddleware<{ Bindings: Env; Variables: { db: D1b; cache: Cache; runlevel: number } }>(
     async (c, next) => {
       if (c.req.method !== 'GET') return next();
       const raw = c.req.raw;
       const filePrefix = FILES_PUBLIC.some((re) => re.test(c.req.path));
+      /* 二进制类（R2 直链图片 + 附件预览）与 JSON 接口的处理差异见 BINARY_PUBLIC 注释 */
+      const binary = filePrefix || BINARY_PUBLIC.some((re) => re.test(c.req.path));
       const ttl = API_TTL.find(([re]) => re.test(c.req.path))?.[1];
-      if (!ttl && !filePrefix) return next();
-      // 资格口径分两档（见各函数注释）：API 要求已持有 csrf Cookie；/files 公共直链不要求
-      if (!(filePrefix ? isFileCacheEligible(raw) : isCacheEligible(raw))) return next();
+      if (!ttl && !binary) return next();
+      // 资格口径分三档（见各函数注释）：/files 公共直链最宽；API 默认绕过登录轨；
+      // PUBLIC_READONLY 里的公共只读端点对登录轨也放开（响应体与访问者无关）
+      if (!(binary ? isFileCacheEligible(raw) : isCacheEligible(raw, c.req.path))) return next();
       const b = bucket();
       if (!b) return next();
 
-      // /files/* 与 UA 无关 → 人类/爬虫共用一个键（SHARED_UA），命中率最高；API 仍按 fi-ua 分键隔离。
-      // /files/* 与语言无关（二进制对象）不编 fi-lang；API 键编入 lang cookie（合法 locale 才编），
+      // 二进制对象与 UA/语言无关 → 人类/爬虫、各语言共用一个键（SHARED_UA、不编 fi-lang），命中率最高。
+      // JSON 接口仍按 fi-ua 分键隔离爬虫与人类，并编入 lang cookie（合法 locale 才编），
       // 防止语言协商后不同语言用户命中同一份缓存副本。
-      const ua = filePrefix ? SHARED_UA : (classifyUserAgent(c.req.header('user-agent') ?? '') as UaClass);
-      const lang = filePrefix
+      const ua = binary ? SHARED_UA : (classifyUserAgent(c.req.header('user-agent') ?? '') as UaClass);
+      const lang = binary
         ? undefined
         : reqLangOf(raw.headers.get('cookie'), raw.headers.get('accept-language'));
+      /* 本请求是否参与手动 SWR：只有首屏三类接口 + 版块简介。
+         内层重放请求（x-fi-revalidate）**只禁读、不禁写**：读 stale 会自激（陈旧→重放→又读陈旧），
+         而写回 stale 正是我们要的——否则 stale 副本会一直是上次全量 MISS 时的旧内容，
+         在「fresh 反复过期 + 重放」的稳定态里越拖越旧。 */
+      const isRevalidate = c.req.header('x-fi-revalidate') === '1';
+      const swrWindow = binary ? undefined : SWR_STALE.find(([re]) => re.test(c.req.path))?.[1];
       const key = keyRequest(raw.url, ua, lang);
       const hit = await b.match(key);
       if (hit) {
         const out = withState(hit, 'HIT');
         /* 缓存副本上的 max-age 只为让 Cloudflare 判定可缓存与 Edge TTL，不能随 HIT 下发给浏览器：
          * HTTP 缓存键不含 Cookie，游客在 30s 窗口内登录后重新拉 /api/bootstrap 会被浏览器喂回
-         * 「游客版」（登录成功但顶栏仍是游客）。/files/* 例外——avatar 直链的 immutable 语义必须保留。 */
-        if (!filePrefix) out.headers.delete('cache-control');
+         * 「游客版」（登录成功但顶栏仍是游客）。二进制类例外——图片的 max-age/immutable 必须保留，
+         * 否则命中边缘的图片每次刷新都会被浏览器重新取一次。 */
+        if (!binary) {
+          out.headers.delete('cache-control');
+          /* 首访补签 csrf Cookie（镜像 csrf 中间件的 GET 分支：随机 32 hex + SameSite=Lax + Secure 跟随协议）。
+           * 游客副本的响应体不含任何 token 或个人数据，补签只影响 Set-Cookie 头；不补的话，
+           * 真首访就永远吃不到边缘缓存——每个新访客都得冷穿透整条 D1 链路。 */
+          if (!CSRF_COOKIE.test(raw.headers.get('cookie') ?? '')) {
+            c.res = out;
+            setCookie(c, 'csrf', randomToken(), { path: '/', sameSite: 'Lax', secure: isHttpsRequest(c), httpOnly: false });
+            return;
+          }
+        }
         c.res = out;
         return;
       }
+
+      /* fresh 副本已过期/不存在：看能不能先给一份 stale 副本（内容最多旧 swrWindow 秒）。
+         命中即返回，真正的刷新丢进 waitUntil —— 用户不再为「副本刚过期」这件事付一次回源时间。 */
+      if (swrWindow !== undefined && !isRevalidate) {
+        const staleHit = await b.match(keyRequest(raw.url, ua, lang, 'stale'));
+        if (staleHit) {
+          const out = withState(staleHit, 'HIT-STALE');
+          out.headers.delete('cache-control');
+          revalidate(c, raw, keyUrl(raw.url, ua, lang));
+          if (!CSRF_COOKIE.test(raw.headers.get('cookie') ?? '')) {
+            c.res = out;
+            setCookie(c, 'csrf', randomToken(), { path: '/', sameSite: 'Lax', secure: isHttpsRequest(c), httpOnly: false });
+            return;
+          }
+          c.res = out;
+          return;
+        }
+      }
+
       await next();
       const res = c.res;
       if (!storeEligible(res)) return;
-      const copy = cachedCopy(res.clone(), ttl, filePrefix);
+      const copy = cachedCopy(res.clone(), ttl, binary);
+      /* 同时写一份 TTL = fresh + 陈旧窗口 的副本：它只在 fresh 过期后兜底，
+         且只在 SWR 白名单接口上写，避免给长尾接口平白多一次缓存写。 */
+      if (swrWindow !== undefined && ttl !== undefined)
+        wait(b.put(keyRequest(raw.url, ua, lang, 'stale'), cachedCopy(res.clone(), ttl + swrWindow)), maybeCtx(c));
+      c.res = withState(res, 'MISS');
+      wait(b.put(key, copy), maybeCtx(c));
+    },
+  );
+}
+
+/* ==================== SPA 壳 HTML 的边缘缓存 ==================== */
+
+/**
+ * 壳 HTML 的 TTL（秒）。
+ *
+ * 壳页只承载「启用主题 id + 站点语言 + 站点标题/描述」——全是**全站同值**的信息，
+ * 与请求路径、访客身份都无关（注入逻辑见 apps/api/src/index.ts 的 injectShell）。
+ * 因此整个站点只占**一条**缓存条目、所有深链共用（见 shellKeyRequest），
+ * 命中率不随长尾 URL 摊薄 —— 这是 HTML 缓存最容易做砸的地方。
+ *
+ * 代价：后台改设置 / 切主题后最长 120s（边缘）+ 120s（浏览器，见下方 max-age 注释）的陈旧窗口。
+ * 站长轨（admin_at）跳过读缓存；硬刷新可同时绕过浏览器缓存，自查即时。
+ *
+ * 取值从 60 提到 120：壳内容变化只由「改设置/切主题/发版」驱动，属低频事件，而每个副本站位都要在
+ * 窗口内被读到才算赚回回源（低频站点 60s 常常等不到第二个请求）。发版后旧壳引用已删 hash 的情况由
+ * 前端 chunk 自愈重载兜底（窗口 120s，可接受；再长就要按发布节奏重新评估）。
+ */
+export const SHELL_TTL = 120;
+
+/** 站长轨 Cookie：改完设置、切完主题当场可见，不被 TTL 挡住 */
+const ADMIN_TRACK = /(?:^|;\s*)admin_at=/;
+
+/**
+ * 壳页路径判定：只接「干净路径」（无扩展名）的人类页面导航。
+ * 排除 /api、/files、/mcp 与一切带扩展名的路径（/assets/*.js、/robots.txt、/sitemap.xml…）：
+ * 后者各自有专门的直出/缓存路径，不能被壳缓存抢在前面。
+ */
+function isShellPath(path: string): boolean {
+  if (path === '/api' || path.startsWith('/api/')) return false;
+  if (path === '/files' || path.startsWith('/files/')) return false;
+  if (path === '/mcp' || path.startsWith('/mcp/')) return false;
+  return !/\/[^/]*\.[^/.]+$/.test(path);
+}
+
+/**
+ * 壳缓存键：**每个 origin 一条固定 URL**，与请求路径无关。
+ * 依据：notFound 对任何干净深链都取同一份 /index.html，再注入同一组全站同值信息，
+ * 所以深链之间可以共用一份副本（键里也不需要语言维度 —— 站点语言只有一种）。
+ * `/__fi/spa-shell` 是纯键名，不对应任何真实资源，永远不会被请求。
+ */
+function shellKeyRequest(origin: string): Request {
+  return new Request(`${origin}/__fi/spa-shell`, { method: 'GET' });
+}
+
+/**
+ * 壳缓存中间件（注册在 runlevel 之后）：
+ * 命中即返回，省掉「ASSETS.fetch 取 index.html」子请求 + 主题/设置装载 + 字符串注入；
+ * 未命中则照常走完整链路，并把产物回填。
+ *
+ * 不接爬虫：它们的正文 HTML 由 prerender() 产出并有自己的边缘条目（键按 fi-ua 隔离）。
+ * 不接非正常档位：壳页 200 会让访客以为站点正常，而所有接口都在报错。
+ */
+export function shellCache() {
+  return createMiddleware<{ Bindings: Env; Variables: { db: D1b; cache: Cache; runlevel: number } }>(
+    async (c, next) => {
+      if (c.req.method !== 'GET') return next();
+      if (!isShellPath(c.req.path)) return next();
+      if (classifyUserAgent(c.req.header('user-agent') ?? '') !== 'human') return next();
+      if (Number(c.get('runlevel') ?? RunLevel.NORMAL) !== RunLevel.NORMAL) return next();
+      const b = bucket();
+      if (!b) return next();
+
+      const key = shellKeyRequest(new URL(c.req.url).origin);
+      if (!ADMIN_TRACK.test(c.req.header('cookie') ?? '')) {
+        const cached = await b.match(key);
+        if (cached) {
+          const out = withState(cached, 'HIT');
+          /* 浏览器侧短缓存与 SHELL_TTL 同值：壳内容全站同值（标题/语言/主题/预载清单），站点已接受
+           * 同级边缘陈旧窗口，浏览器再吃一次即可把 F5/回访的整次回源 RTT（跨境 ~0.5s+）直接省掉。
+           * 发版后旧壳引用已删除 asset hash 的白屏由前端 chunk 自愈重载兜底（与边缘副本同一路径），
+           * 最坏窗口 = 2×SHELL_TTL；站长硬刷新（Ctrl/Cmd+R）不受 max-age 影响，仍即时可见。 */
+          out.headers.set('cache-control', `public, max-age=${SHELL_TTL}`);
+          c.res = out;
+          return;
+        }
+      }
+
+      await next();
+      const res = c.res;
+      if (res.status !== 200) return;
+      if (res.headers.has('set-cookie')) return;
+      if (!(res.headers.get('content-type') ?? '').includes('text/html')) return;
+      /* 浏览器缓存 HIT/MISS 同口径：MISS 也下发 max-age，否则首次访问不缓存、60s 内刷新又变回回源，
+       * 与 HIT 行为不对称（浏览器在两次导航间无法区分边缘是否命中）。 */
+      res.headers.set('cache-control', `public, max-age=${SHELL_TTL}`);
+      const copy = cachedCopy(res.clone(), SHELL_TTL);
       c.res = withState(res, 'MISS');
       wait(b.put(key, copy), maybeCtx(c));
     },

@@ -39,27 +39,28 @@ export interface ForumNode {
   nameI18n?: Record<string, string>;
   rank: number;
   brief: string;
-  /** 版块简介多语言（0028）：locale → 简介；缺省/空 = 未配置，展示回退 brief */
+  /** 版块简介多语言（0028）：locale → 简介；缺省/空 = 未配置，展示回退 brief。
+   *  **bootstrap 不下发**（28 版块 × 10 语言 ≈ 15KB gzip，占整包 66%）：只有发现页需要，
+   *  改由 GET /api/forums/briefs 按需拉取（见 ForumBriefsPayload）。 */
   briefI18n?: Record<string, string>;
   threads: number;
   todayposts: number;
   todaythreads?: number;
+  /** SEO 标题（0028，单值）。**不下发多语言映射**：前端零引用，SEO 产物由 prerender
+   *  直接查库、固定按站点语言取词生成（apps/api/src/modules/seo/core.ts），
+   *  10 个语言副本里只有 1 个会进 HTML —— 下发整份 map 每次 bootstrap 要多背 11KB。 */
   seoTitle: string;
-  /** SEO 标题多语言（0028）：前台按当前界面语言取词，SEO 产物按站点语言取词 */
-  seoTitleI18n?: Record<string, string>;
+  /** SEO 关键词（0028，单值；多语言映射同上，不下发） */
   seoKeywords: string;
-  /** SEO 关键词多语言（0028） */
-  seoKeywordsI18n?: Record<string, string>;
   /** 版块图标版本号（存"最后更新时间"，>0 即有图标） */
   icon?: number;
   /** 自定义图标直链（后台上传，/files/forum/{fid}.xxx?v=ts）；空 = 前台用内置默认图 */
   iconUrl?: string;
   /** 版块栏图标显示开关（0029）：0 = 前台版块栏只显示版块名、不渲染图标；缺省/1 = 显示 */
   iconShow?: number;
-  /** 版块公告（公告卡/绿底 alert） */
+  /** 版块公告（公告卡/绿底 alert）。bootstrap 只下发这个单值；
+   *  公告多语言（0028）由版块页自己的 GET /api/forums/:fid/threads 随 forum 对象下发。 */
   announcement?: string;
-  /** 版块公告多语言（0028）：locale → 公告；缺省/空 = 未配置，展示回退 announcement */
-  announcementI18n?: Record<string, string>;
   /** 上级版块 fid，0/缺省 = 一级版块（0018_forum_parent，仅两级） */
   parentFid?: number;
   /** 生效内容语言（0024，已含父版块继承与「显式不限制」哨兵解析）：空/缺省 = 不限制；
@@ -67,6 +68,14 @@ export interface ForumNode {
   lang?: ContentLang | '';
   /** 二级导航（并入 bootstrap） */
   children?: ForumNode[];
+}
+
+/**
+ * GET /api/forums/briefs：版块简介多语言（0028）的按需下发。
+ * 由发现页「全部版块」网格消费；只含当前访问者可见且**配了多语言简介**的版块。
+ */
+export interface ForumBriefsPayload {
+  list: Array<{ fid: number; briefI18n: Record<string, string> }>;
 }
 
 /** 列表行：thread 反规范化列 → 零 JOIN 零 user 查询（§5.2） */
@@ -284,6 +293,18 @@ export interface BootstrapPayload {
   ext?: Record<string, unknown>;
   /** 站点运行数据：全站贴子总数 + 用户数，60s 读穿缓存 */
   runtime?: { posts: number; users: number };
+  /** 首页系统公告（0011）：随 bootstrap 下发，省掉 GET /api/announcements 这一次冷启动请求 */
+  announcements?: AnnouncementItem[];
+  /** 在线人数（bbs_session 计数）：随 bootstrap 下发，省掉 GET /api/online?summary=1 */
+  online?: number;
+}
+
+/** 首页公告条条目（bbs_announcement，isshow=1，aid 倒序 ≤10 条） */
+export interface AnnouncementItem {
+  aid: number;
+  /** 已还原 HTML 实体的原文（写侧入库时转义过，见 apps/api/src/core/fmt.ts 的 unescapeHtmlEntities） */
+  message: string;
+  createDate: number;
 }
 
 export interface SiteSetting {
@@ -339,8 +360,8 @@ export interface SiteSetting {
   nav?: NavItem[];
   /**
    * 内容语言分区模式（后台「内容语言」设置，kv setting.content_lang）：
-   * 0 = 关闭（默认，行为与改造前完全一致）
-   * 1 = 开启，列表默认「全部语言」，用户可在筛选条自行切换
+   * 0 = 关闭（前台不出现筛选条，列表不按语言过滤）
+   * 1 = 开启（缺省），列表默认「全部语言」，用户可在筛选条自行切换
    * 2 = 开启，列表默认跟随界面语言（适合内容已回填、希望默认分流的站点）
    */
   contentLang?: number;
@@ -359,6 +380,12 @@ export interface NavItem {
    * 空/缺省 = 不显示图标（外部链接仍显示外链小图标）。
    */
   icon?: string;
+  /**
+   * 自定义图标直链（可选）：后台「导航栏设置」上传图片后由服务端落 R2（`site/nav/{随机段}.{ext}`），
+   * 本字段只保存这条站内直链（服务端白名单校验，不收外部 URL）。
+   * 前台优先渲染这张图，其次才回退 `icon` 内置图标；空/缺省 = 不显示图标。
+   */
+  iconUrl?: string;
   /** 链接目标：站内路径（/forum/{fid}、/thread/{tid}、/new 等）或完整 URL */
   url: string;
   /** 排序（小在前） */

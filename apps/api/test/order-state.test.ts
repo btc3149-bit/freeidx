@@ -78,7 +78,8 @@ const UPDATE_ORDER = { test: /UPDATE bbs_order SET/, rows: [], changes: 1 } as S
 const INSERT_ORDER = { test: /INSERT INTO bbs_order/, rows: [] } as SqlRule;
 const FIND_PLAN = { test: /FROM bbs_vip_plan WHERE id = \?/, first: PLAN } as SqlRule;
 const UPDATE_VIP = { test: /UPDATE bbs_user SET vip_expire_at/, rows: [] } as SqlRule;
-const UPDATE_CREDITS = { test: /UPDATE bbs_user SET credits = credits \+ \?/, rows: [] } as SqlRule;
+// 正增量仍是 credits + ?，负增量变为 MAX(0, credits + ?)：统一用前缀匹配两条路径
+const UPDATE_CREDITS = { test: /UPDATE bbs_user SET credits =/, rows: [] } as SqlRule;
 const UPDATE_GID_BACK = { test: /UPDATE bbs_user SET gid = vip_from_gid/, rows: [] } as SqlRule;
 const INSERT_LOG = { test: /INSERT INTO bbs_point_log/, rows: [] } as SqlRule;
 /** 履约后 user:{uid} 缓存失效（core/order.fulfillOrder 的 cache.del） */
@@ -269,6 +270,44 @@ describe('refundOrder / closeOrder', () => {
     ]);
     await refundOrder(core.db, 'FI-TEST', 1);
   });
+  it('refund：有快照时计划被硬删仍按购买时权益回收（不再全额白送）', async () => {
+    const { core, calls } = makeCore([
+      {
+        test: /FROM bbs_order WHERE order_no = \?/,
+        first: orderRow(OrderStatus.FULFILLED, { plan_duration_days: 365, plan_credits: 100, plan_gid: 101 }),
+      },
+      UPDATE_ORDER,
+      { test: /FROM bbs_vip_plan WHERE id = \?/, first: null }, // 计划已硬删
+      UPDATE_VIP,
+      INSERT_LOG,
+      UPDATE_CREDITS,
+      UPDATE_GID_BACK,
+    ]);
+    await refundOrder(core.db, 'FI-TEST', 1);
+    // 不再回退读「当前计划」：否则 days=0/credits=0，钱退了但权益一分未收回
+    expect(calls.some((c) => /FROM bbs_vip_plan WHERE id = \?/.test(c.sql))).toBe(false);
+    const vip = calls.find((c) => /vip_expire_at = MAX\(0, vip_expire_at - \?\)/.test(c.sql));
+    expect(vip?.params[0]).toBe(365 * 86400);
+  });
+
+  it('fulfill：有快照时计划被硬删仍能履约（不再永久停在 paid）', async () => {
+    const { core, calls } = makeCore([
+      {
+        test: /FROM bbs_order WHERE order_no = \?/,
+        first: orderRow(OrderStatus.PAID, { plan_duration_days: 30, plan_credits: 0, plan_gid: 101 }),
+      },
+      { test: /UPDATE bbs_order SET status = \?, fulfilled_date = \?/, rows: [], changes: 1 },
+      UPDATE_VIP,
+      { test: /UPDATE bbs_user SET gid = \?, vip_from_gid = CASE/, rows: [] },
+      DELETE_CACHE,
+      { test: /FROM bbs_vip_plan WHERE id = \?/, first: null },
+    ]);
+    await fulfillOrder(core, 'FI-TEST', 1);
+    expect(calls.some((c) => /FROM bbs_vip_plan WHERE id = \?/.test(c.sql))).toBe(false);
+    const vip = calls.find((c) => /vip_expire_at = MAX\(vip_expire_at, \?\) \+ \?/.test(c.sql));
+    expect(vip?.params[1]).toBe(30 * 86400);
+  });
+
   it('refund：pending→refunded 非法', async () => {
     const { core } = makeCore([GET_ORDER(OrderStatus.PENDING)]);
     await expect(refundOrder(core.db, 'FI-TEST', 1)).rejects.toMatchObject({ code: Code.VALIDATION_ERROR });

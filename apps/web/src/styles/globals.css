@@ -1,4 +1,8 @@
 @import 'tailwindcss';
+/* 中文字体分片（unicode-range）：生成文件，见同目录注释与 scripts/gen-font-subset.mjs */
+@import './font-faces.generated.css';
+/* 得意黑分片（后台「正文样式=2」时全站覆盖）：与基座同一套字表/分片算法，按需取片 */
+@import './font-faces-smiley.generated.css';
 
 /*
  * Tailwind 4 CSS-first 主题：设计令牌的单一事实源。
@@ -126,19 +130,20 @@ html[lang^='zh'] {
  * 发丝线 rgba(178,186,194,.15)、正文链接 #1f4977。遗留令牌名全部保留并映射到主题色。
  */
 /*
- * 正文字体：源字体 885.7KB（6619 字形）按「常用 3500 字 ∪ 站点用字」再子集为 ~454KB（-49%），
- * 未收录的生僻字回退系统字（微软雅黑/苹方），中文长文实测回退率 0.08%。
- * 生成：pnpm fonts:build（scripts/gen-font-subset.mjs）；校验：pnpm fonts:check。
+ * 正文字体：源字体 885.7KB（6619 字形）按「常用 3500 字 ∪ 站点用字」子集为 3600 字形，
+ * 再按字频切成 12 片（unicode-range，见文件顶部的 @import）。分片产物与浏览器取片规则：
+ *   第 00 片 = UI 文案用字 + 非 CJK + 最常用汉字 —— 任何页面必然命中，且 UI 零回退；
+ *   其余 11 片按词频顺序等分，只有页面真实渲染到片内字符时才会下载。
  *
- * 注意：/fonts/* 在 public/_headers 里声明了 immutable，换字体必须同时升级文件名版本号（v1 → v2），
- * 否则老访客一年内不会重新拉取。
+ * 实测收益（同一份字表，按真实页面渲染到的字符统计）：
+ *   首页（UI 文案 + 列表标题） 454 KiB → 156 KiB（2 片）
+ *   帖子页（含正文全文）        454 KiB → 259 KiB（5 片）
+ * 未收录的生僻字仍回退系统字（微软雅黑/苹方），中文长文实测回退率 0.08%。
+ *
+ * 生成：pnpm fonts:build（scripts/gen-font-subset.mjs）；校验：pnpm fonts:check。
+ * 注意：/fonts/* 在 public/_headers 里声明了 immutable，换字体必须同时升级文件名版本号，
+ * 否则老访客一年内不会重新拉取 —— 版本号在 gen-font-subset.mjs 的 VERSION 常量里（当前 v2）。
  */
-@font-face {
-  font-family: 'HarmonyOS_Sans_SC_Medium';
-  font-style: normal;
-  font-display: swap;
-  src: url('/fonts/HarmonyOS_Sans_SC_Medium.subset.v1.woff2') format('woff2');
-}
 
 @theme {
   /* ===== 简蓝主题专有色（不覆盖默认令牌，仅作为新增工具类）===== */
@@ -268,14 +273,8 @@ html[lang^='zh'] {
 .theme-zh.font-smiley {
   font-family: 'smileySans', var(--font-app);
 }
-
-@font-face {
-  font-family: 'smileySans';
-  font-style: oblique;
-  font-display: swap;
-  /* 同 glyph 无损容器替换：TTF 2073KB → WOFF2 929KB（省 55%），渲染结果完全一致 */
-  src: url('/fonts/SmileySans-Oblique.woff2') format('woff2');
-}
+/* smileySans 的分片 @font-face 见 ./font-faces-smiley.generated.css（pnpm fonts:build 生成）：
+ * 单文件时代此处曾手写 929KB 的全量 woff2 引用，分片后任何页面只按需下载真实渲染到的片。 */
 
 /* ============ 简蓝主题暗色 ============
  * 挂 <html class="dark">：令牌整体切换，工具类随动。 */
@@ -696,6 +695,53 @@ html {
   background: var(--color-zh-quote);
   border-left: 5px solid #0084ff;
   padding: 0.5rem 0.75rem;
+}
+/* 视频外链播放器（B 站/YouTube/Vimeo/优酷）：铺满正文可用宽度、16:9 等比，
+   属性里的 width/height 只作 CSS 未生效时的兜底与首屏比例预留 */
+.post-body iframe.video-embed,
+.video-embed-wrap iframe.video-embed {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  border: 0;
+  border-radius: 4px;
+  background: #000;
+}
+.video-embed-wrap {
+  position: relative;
+  width: 100%;
+  margin: 8px 0;
+}
+.video-embed-wrap.ProseMirror-selectednode {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+/* 编辑器内的移除按钮：hover 才显形，避免遮挡播放器控件；
+   贴内边距摆放（不溢出容器），否则编辑器 overflow-y:auto 会带出横向滚动条 */
+.video-embed-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  display: flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: #f56c6c;
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s;
+  cursor: pointer;
+}
+.video-embed-wrap:hover .video-embed-del,
+.video-embed-wrap.ProseMirror-selectednode .video-embed-del {
+  opacity: 1;
 }
 .ProseMirror:focus {
   outline: none;

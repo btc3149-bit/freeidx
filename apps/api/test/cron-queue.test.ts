@@ -35,8 +35,9 @@ describe('cron 每 5 分钟档（§11.1：sess_gc + 在线数刷新）', () => {
     expect(r.sessExpiry).toBe(NOW - 120);
     expect(r.onlines).toBe(4);
     expect(d.calls.find((c) => /DELETE FROM bbs_session/.test(c.sql))?.params[0]).toBe(NOW - 120);
-    // runtime 刷新写入缓存（L2 bbs_cache）
-    expect(d.calls.some((c) => /REPLACE INTO bbs_cache/.test(c.sql))).toBe(true);
+    // runtime 刷新落 bbs_runtime 表（只覆盖 onlines 键）
+    const rt = d.calls.find((c) => /INSERT INTO bbs_runtime/.test(c.sql));
+    expect(rt?.params).toEqual(['onlines', 4]);
   });
 
   it('缺省 online_hold_time=300；零 session → onlines 下限 1', async () => {
@@ -90,10 +91,11 @@ describe('cron 每日凌晨档（§11.1：计数校准 + today 清零 + queue GC
       expect(d.calls.some((c) => re.test(c.sql))).toBe(true);
     }
     expect(d.calls.some((c) => /UPDATE bbs_forum SET todayposts = 0/.test(c.sql))).toBe(true);
-    // 校准后的全站数与 today 清零一起写回 runtime（L2 bbs_cache）
-    const runtimeWrite = d.calls.find((c) => /REPLACE INTO bbs_cache/.test(c.sql));
-    expect(runtimeWrite).toBeTruthy();
-    expect(String(runtimeWrite?.params[1] ?? runtimeWrite?.params.at(-1))).toContain('"threads":10');
+    // 校准后的全站数与 today 清零一起落 bbs_runtime（逐键 UPSERT，不做整对象覆盖）
+    const writes = d.calls.filter((c) => /INSERT INTO bbs_runtime/.test(c.sql));
+    expect(writes.some((c) => c.params[0] === 'threads' && c.params[1] === 10)).toBe(true);
+    expect(writes.some((c) => c.params[0] === 'posts' && c.params[1] === 25)).toBe(true);
+    expect(writes.some((c) => c.params[0] === 'todayposts' && c.params[1] === 0)).toBe(true);
     expect(d.calls.some((c) => /DELETE FROM bbs_queue WHERE expiry > 0/.test(c.sql))).toBe(true);
     // 临时附件 GC 已挪到每小时档（子请求预算约束），每日档不得再触碰 bbs_attach
     expect(d.calls.some((c) => /bbs_attach/.test(c.sql))).toBe(false);
@@ -138,26 +140,28 @@ describe('cron 每日凌晨档（§11.1：计数校准 + today 清零 + queue GC
     expect(d.calls.some((c) => /UPDATE bbs_forum SET todayposts = 0/.test(c.sql))).toBe(true);
     expect(d.calls.some((c) => /DELETE FROM bbs_queue/.test(c.sql))).toBe(true);
     expect(d.calls.some((c) => /DELETE FROM bbs_cache WHERE expiry > 0 AND expiry <= \?/.test(c.sql))).toBe(true);
-    // 校准失败 → runtime 保留现值（不把 0 写回全站数），仅清零 today*
-    const runtimeWrite = d.calls.find((c) => /REPLACE INTO bbs_cache/.test(c.sql));
-    expect(String(runtimeWrite?.params[1] ?? runtimeWrite?.params.at(-1))).not.toContain('"threads":10');
+    // 校准失败 → 不写 threads/posts（不把 0 覆盖全站数），仅清零 today*
+    const writes = d.calls.filter((c) => /INSERT INTO bbs_runtime/.test(c.sql));
+    expect(writes.some((c) => c.params[0] === 'threads')).toBe(false);
+    expect(writes.some((c) => c.params[0] === 'posts')).toBe(false);
+    expect(writes.some((c) => c.params[0] === 'todaythreads')).toBe(true);
   });
 });
 
-describe('临时附件 GC（每小时档：先删对象再删行，批量对齐子请求预算）', () => {
-  const staleRules = (rows: { aid: number; filename: string }[]): SqlRule[] => [
+describe('临时附件 GC（每小时档：条件删行成功后才删对象，避免误删已发布附件）', () => {
+  const staleRules = (rows: { aid: number; filename: string }[], changes: number | ((p: readonly unknown[]) => number) = 1): SqlRule[] => [
     { test: /SELECT aid,filename FROM bbs_attach WHERE status = 0 AND create_date < \? LIMIT \?/, rows: () => rows },
-    { test: /DELETE FROM bbs_attach WHERE aid IN/, rows: [] },
+    { test: /DELETE FROM bbs_attach WHERE aid = \? AND status = 0/, rows: [], changes },
   ];
 
-  it('先删 R2 对象、再删 D1 行；返回实际删除条数', async () => {
+  it('先条件删 D1 行、成功后再删 R2 对象；返回实际删除条数', async () => {
     const deleted: string[] = [];
     const files = { delete: (k: string | string[]) => void (Array.isArray(k) ? deleted.push(...k) : deleted.push(k)) };
     const rows = [1, 2, 3].map((i) => ({ aid: i, filename: `tmp/${i}.png` }));
     const d = deps([...staleRules(rows), ...common], files);
     const n = await attachGc(d.cron, NOW);
     expect(n).toBe(3);
-    // 每个对象都被尝试删除（时间窗与批量生效）；缩略图按 aid 推导，与原件一并批删
+    // 每个对象都被尝试删除；缩略图按 aid 推导，与原件一并批删
     expect(deleted).toEqual([
       'tmp/1.png',
       'attach/thumb/1.webp',
@@ -166,24 +170,23 @@ describe('临时附件 GC（每小时档：先删对象再删行，批量对齐�
       'tmp/3.png',
       'attach/thumb/3.webp',
     ]);
-    const del = d.calls.find((c) => /DELETE FROM bbs_attach WHERE aid IN/.test(c.sql));
-    expect(del?.params).toEqual([1, 2, 3]);
+    const dels = d.calls.filter((c) => /DELETE FROM bbs_attach WHERE aid = \?/.test(c.sql));
+    expect(dels.map((c) => c.params[0])).toEqual([1, 2, 3]);
+    // 时间窗条件下推，SELECT 与 DELETE 之间被发帖关联（status→1）也不会删行
+    expect(dels[0]?.params[1]).toBe(NOW - 86400);
     expect(d.calls.find((c) => /FROM bbs_attach WHERE status = 0/.test(c.sql))?.params[1]).toBe(40);
   });
 
-  it('对象删除失败 → 保留该行 D1 元数据（下轮重试），不产生 R2 孤儿', async () => {
-    const files = {
-      delete: (k: string | string[]) => {
-        const keys = Array.isArray(k) ? k : [k];
-        if (keys.some((x) => x.endsWith('2.png'))) throw new Error('r2 unavailable');
-      },
-    };
+  it('窗口内附件被发帖关联（changes=0）→ 跳过该行且不删 R2 对象', async () => {
+    const deleted: string[] = [];
+    const files = { delete: (k: string | string[]) => void (Array.isArray(k) ? deleted.push(...k) : deleted.push(k)) };
     const rows = [1, 2, 3].map((i) => ({ aid: i, filename: `tmp/${i}.png` }));
-    const d = deps([...staleRules(rows), ...common], files);
+    // aid=2 在 SELECT 与 DELETE 之间被关联（status→1）→ 条件删除 changes=0
+    const d = deps([...staleRules(rows, (p) => (Number(p[0]) === 2 ? 0 : 1)), ...common], files);
     const n = await attachGc(d.cron, NOW);
     expect(n).toBe(2);
-    const del = d.calls.find((c) => /DELETE FROM bbs_attach WHERE aid IN/.test(c.sql));
-    expect(del?.params).toEqual([1, 3]); // 失败行 aid=2 不在删除列表
+    expect(deleted).not.toContain('tmp/2.png');
+    expect(deleted).toEqual(['tmp/1.png', 'attach/thumb/1.webp', 'tmp/3.png', 'attach/thumb/3.webp']);
   });
 
   it('无过期附件 → 不发任何 R2/D1 操作', async () => {
@@ -199,7 +202,7 @@ describe('临时附件 GC（每小时档：先删对象再删行，批量对齐�
     const rows = [{ aid: 9, filename: 'tmp/9.png' }];
     const d = deps([...staleRules(rows), ...common]);
     expect(await attachGc(d.cron, NOW)).toBe(1);
-    expect(d.calls.find((c) => /DELETE FROM bbs_attach WHERE aid IN/.test(c.sql))?.params).toEqual([9]);
+    expect(d.calls.find((c) => /DELETE FROM bbs_attach WHERE aid = \?/.test(c.sql))?.params[0]).toBe(9);
   });
 });
 

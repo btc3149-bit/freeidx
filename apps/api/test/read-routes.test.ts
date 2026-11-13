@@ -38,13 +38,16 @@ function baseRules(over: Partial<Record<string, unknown[] | null>> = {}): SqlRul
     /* bootstrap 站点数据卡 runtime 计数（全站贴子/用户数） */
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_post$/, first: { c: 2 } },
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_user$/, first: { c: 2 } },
+    /* bootstrap 顺带下发的首页公告与在线人数（原先各是一个独立请求） */
+    { test: /FROM bbs_announcement/, rows: [{ aid: 3, message: '系统公告 &amp; 提示', create_date: 1700000003 }] },
+    { test: /SELECT COUNT\(\*\) AS c FROM bbs_session$/, first: { c: 7 } },
     { test: /bbs_forum_access/, rows: access },
     { test: /bbs_thread_top/, rows: [] },
     { test: /FROM bbs_thread WHERE fid IN/, rows: threads },
     { test: /FROM bbs_thread WHERE uid = \?/, rows: [T2] },
     { test: /FROM bbs_thread WHERE tid = \?/, first: DETAIL },
     /* 上一篇/下一篇（同版块 tid 邻接；UNION ALL 单语句取两条） */
-    { test: /FROM bbs_thread WHERE fid = \? AND tid [<>] \?/, rows: [] },
+    { test: /FROM bbs_thread WHERE fid = \? AND ok = 1 AND tid [<>] \?/, rows: [] },
     /* 用户页「最后活跃」（0002 后 user/routes 实时查 session 最后心跳） */
     { test: /FROM bbs_session WHERE uid = \?/, first: { last_date: 1700000002 } },
     /* 主题详情点赞计数 + 访问者态（A4/A5：bbs_like 实时 COUNT） */
@@ -97,6 +100,31 @@ describe('只读接口集成（T1-4 DoD）', () => {
     expect(calls.filter((c) => /FROM bbs_user/.test(c.sql))).toHaveLength(1); // 作者 V 头衔/预设头像随行批量补查恰 1 次
   });
 
+  it('置顶合并：同级按置顶时间倒序（top_at DESC，存量 0 回落 tid DESC）', async () => {
+    const { env, calls } = envFor(baseRules());
+    expect((await json(await app.request('/api/threads', {}, env as never))).code).toBe(Code.OK);
+    const top = calls.find((c) => /bbs_thread_top/.test(c.sql))!;
+    expect(top.sql).toMatch(/ORDER BY tt\.top DESC, tt\.top_at DESC, t\.tid DESC/);
+  });
+
+  it('置顶合并：首页并入全部置顶级别（本版置顶 1/2 也前置，不只 top=3）', async () => {
+    const { env, calls } = envFor(baseRules());
+    expect((await json(await app.request('/api/threads', {}, env as never))).code).toBe(Code.OK);
+    const top = calls.find((c) => /bbs_thread_top/.test(c.sql))!;
+    expect(top.sql).toMatch(/tt\.top >= 1/);
+    expect(top.sql).not.toMatch(/tt\.top = 3|tt\.top BETWEEN/);
+  });
+
+  it('置顶合并：语言筛选时参数次序与占位符一致（cond → ok → lang）', async () => {
+    const { env, calls } = envFor(baseRules());
+    expect((await json(await app.request('/api/threads?lang=zh', {}, env as never))).code).toBe(Code.OK);
+    const top = calls.find((c) => /bbs_thread_top/.test(c.sql))!;
+    // SQL 里 okCond（t.uid = ?）在 langCond（t.lang = ?）之前，绑定次序必须一致，
+    // 否则游客 uid=0 会与语言串错位，置顶块静默查空（只有徽章、不前置）。
+    expect(top.sql).toMatch(/t\.uid = \?[\s\S]*t\.lang = \?/);
+    expect(top.params).toEqual([0, 'zh']);
+  });
+
   it('digest=1 时不并置顶表', async () => {
     const { env, calls } = envFor(baseRules());
     const res = await app.request('/api/threads?digest=1', {}, env as never);
@@ -116,6 +144,21 @@ describe('只读接口集成（T1-4 DoD）', () => {
     expect(q2.sql).toMatch(/LIMIT \? OFFSET \?/); // 编号页码真正移动窗口，修复"点第2页仍是第1页"
     expect(q2.params).toContain(30); // THREAD_LIST size=30 → 第 2 页 OFFSET 30
     expect(p2.calls.some((c) => /bbs_thread_top/.test(c.sql))).toBe(false); // 置顶仅首页并入
+  });
+
+  it('列表 SQL 下推审核可见性；游标取本页最后一条可见主题', async () => {
+    // 最后一行 ok=0（待审）：游客不可见，游标必须回退到上一条可见行（T2.lastpid=2），
+    // 否则下一页以 1 为 before 会把 T2 之后的内容整段跳过/重复。
+    const rs = baseRules({ threads: [T2, { ...T1, ok: 0 }] });
+    const { env, calls } = envFor(rs);
+    const body = await json(await app.request('/api/threads?page=1', {}, env as never));
+    expect(body.code).toBe(Code.OK);
+    const d = body.data as { list: { tid: number }[]; nextCursor: number };
+    expect(d.list.map((x) => x.tid)).toEqual([2]);
+    expect(d.nextCursor).toBe(2);
+    const q = calls.find((c) => /FROM bbs_thread WHERE fid IN/.test(c.sql));
+    expect(q?.sql).toContain('ok = 1');
+    expect(q?.sql).toContain('ok <> -2');
   });
 
   it('GET /api/threads/2：作者映射 + 引用块 + 游客权限位 + userip 不外泄', async () => {
@@ -151,6 +194,55 @@ describe('只读接口集成（T1-4 DoD）', () => {
     expect(calls.length).toBeLessThanOrEqual(20);
     await Promise.all(waited); // waitUntil 旁路落库
     expect(calls.some((c) => /UPDATE bbs_thread SET views/.test(c.sql))).toBe(true);
+  });
+
+  it('GET /api/threads/2：读路径按批发出（主题+计数 / 楼层 / 聚合），不再是 8 轮串行', async () => {
+    const { db } = fakeD1Sql(baseRules());
+    let batches = 0;
+    const wrapped = {
+      ...db,
+      batch: async (stmts: never) => {
+        batches += 1;
+        return db.batch(stmts as never);
+      },
+    };
+    const env = { DB: wrapped, CACHE: fakeKv(), FILES: {}, SITE_URL: 'http://localhost' };
+    const res = await app.request('/api/threads/2', {}, env as never, {
+      waitUntil: () => {},
+    } as never);
+    expect((await json(res)).code).toBe(Code.OK);
+    // 批 ①（主题 + 点赞/收藏）与批 ③（点赞/附件/引用/上下篇/本页作者）固定各 1 次；
+    // 批 ④ 只在「引用作者不在本页 / 付费帖查购买记录」时才发（本用例不会触发）。
+    expect(batches).toBeGreaterThanOrEqual(2);
+    expect(batches).toBeLessThanOrEqual(3);
+  });
+
+  it('GET /api/threads/2?page=2 付费帖：补查首帖判断付费段，游客 purchased=false', async () => {
+    /* 第 2 页起 posts 不含首帖：必须靠批 ③ 里的 firstFmt 补查判断有没有 [ttPay] 段，
+       否则 purchased 会误判为 true（购买入口消失）。这里锁住批量化后的这条路径。 */
+    const { env, calls } = envFor([
+      // 顺序敏感：先于「posts by tid」规则，避免被它抢走
+      { test: /message_fmt FROM bbs_post/, rows: [{ message_fmt: '<p>[ttPay]付费内容[/ttPay]</p>' }] },
+      { test: /FROM bbs_thread WHERE tid = \?/, first: { ...DETAIL, content_buy: 100, content_buy_type: 1 } },
+      {
+        test: /FROM bbs_post WHERE tid = \?/,
+        rows: [
+          {
+            pid: 9, tid: 2, uid: 2, isfirst: 0, ok: 1, create_date: 1700000009, userip: 16 << 24,
+            images: 0, files: 0, doctype: 0, quotepid: 0, message: '回复', message_fmt: '<p>回复</p>',
+          },
+        ],
+      },
+      ...baseRules(),
+    ]);
+    const res = await app.request('/api/threads/2?page=2', {}, env as never, { waitUntil: () => {} } as never);
+    const body = await json(res);
+    expect(body.code).toBe(Code.OK);
+    expect((body.data as { purchased: boolean }).purchased).toBe(false);
+    // 首帖正文确实被补查过一次（付费段判定依赖它）
+    expect(calls.some((c) => /message_fmt FROM bbs_post WHERE tid = \? AND isfirst = 1/.test(c.sql))).toBe(true);
+    // 游客不查购买记录（viewer.uid=0），批 ④ 不产生
+    expect(calls.some((c) => /FROM bbs_paylist WHERE tid = \? AND uid = \? AND type = 1/.test(c.sql))).toBe(false);
   });
 
   it('GET /api/threads/2/hot-posts：未购游客 includeFirst=1 也不得读到付费段正文', async () => {
@@ -204,6 +296,47 @@ describe('只读接口集成（T1-4 DoD）', () => {
     expect(d.setting.sitename).toBe('319解说');
     // 未配置 SMTP 池 ⇒ mailOn=false：前端据此隐藏验证码框（后端此时按「验证关闭」降级）
     expect(d.setting.mailOn).toBe(false);
+  });
+
+  it('GET /api/bootstrap：不再下发版块简介多语言（briefI18n 迁到 /api/forums/briefs）', async () => {
+    const rules = baseRules({
+      forum: [{ ...FORUM_OPEN, brief_i18n: '{"zh-cn":"中文简介","en-us":"EN brief"}' }],
+    });
+    const { env } = envFor(rules);
+    const body = await json(await app.request('/api/bootstrap', {}, env as never));
+    expect(body.code).toBe(Code.OK);
+    const d = body.data as { forumlist: Record<string, unknown>[] };
+    // 单值 brief 仍下发（前端兜底），多语言映射整份移除（占整包 gzip 66%）
+    expect(d.forumlist[0]!.brief).toBe('介绍');
+    expect('briefI18n' in d.forumlist[0]!).toBe(false);
+  });
+
+  it('GET /api/forums/briefs：只返回可见且配了多语言简介的版块', async () => {
+    const rules = baseRules({
+      forum: [
+        { ...FORUM_OPEN, brief_i18n: '{"zh-cn":"中文简介","en-us":"EN brief"}' },
+        { ...FORUM_OPEN, fid: 2, name: '无多语言', brief_i18n: '' },
+        { ...FORUM_OPEN, fid: 3, name: '私密版块', accesson: 1, brief_i18n: '{"zh-cn":"私密简介"}' },
+      ],
+    });
+    const { env } = envFor(rules);
+    const body = await json(await app.request('/api/forums/briefs', {}, env as never));
+    expect(body.code).toBe(Code.OK);
+    const d = body.data as { list: { fid: number; briefI18n: Record<string, string> }[] };
+    expect(d.list).toEqual([{ fid: 1, briefI18n: { 'zh-cn': '中文简介', 'en-us': 'EN brief' } }]);
+  });
+
+  it('GET /api/bootstrap：顺带下发首页公告与在线人数（省掉两个独立请求）', async () => {
+    const { env } = envFor(baseRules());
+    const body = await json(await app.request('/api/bootstrap', {}, env as never));
+    const d = body.data as {
+      announcements: { aid: number; message: string; createDate: number }[];
+      online: number;
+    };
+    /* 公告入库时被转义的实体必须在只读出口还原，否则首页条会显示 &amp; 字面量
+       （与 GET /api/announcements 共用 core/fmt.ts 的 unescapeHtmlEntities） */
+    expect(d.announcements[0]).toEqual({ aid: 3, message: '系统公告 & 提示', createDate: 1700000003 });
+    expect(d.online).toBe(7);
   });
 
   it('GET /api/bootstrap：版块按后台 rank 升序下发，rank 相同按 fid 升序', async () => {

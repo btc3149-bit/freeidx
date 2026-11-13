@@ -2,9 +2,11 @@
  * Cache API 边缘响应缓存层（§7 读取屏障）测试：
  *  - 游客只读接口 HIT 后对 D1 零查询（runlevel 的 setting 查询一并省掉）
  *  - 个人化请求（登录轨 Cookie / Authorization）绕开，csrf Cookie 不影响参与资格
- *  - 只写入 200 且无 Set-Cookie 的响应；抛错路径不落缓存
+ *  - 只写入 200 且 Set-Cookie 仅限 csrf 的响应（缓存副本会剥掉该头，HIT 时按需补签）；
+ *    抛错路径不落缓存
  *  - 缓存副本带 max-age，客户端响应不带（TTL 归边缘，不污染浏览器缓存）
  *  - UA 分类进键：爬虫 HTML 与人类响应互不串台（Cloudflare 缓存键不认 Vary）
+ *  - 公共图片（附件预览）与二进制直链同口径：共享键、保留源头 max-age
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../src/index';
@@ -16,6 +18,7 @@ const SETTING = JSON.stringify({
   runlevel: 5, sitename: '319解说', brief: 'b', url: 'http://localhost', kw: '', desc: '',
   user_create_on: 1, user_create_email_on: 0, user_resetpw_on: 1,
   forum_orderby: 0, update_views_on: 1, upload_max_size: 1048576, lang: 'zh-cn',
+  favicon_url: '/files/site/favicon.png?v=1',
 });
 const GUEST_GROUP = {
   gid: 0, name: '游客组', creditsfrom: 0, creditsto: 0,
@@ -52,6 +55,8 @@ function rules(): SqlRule[] {
     { test: /FROM bbs_thread WHERE ok = 1 ORDER BY last_date DESC LIMIT 1000/, rows: [{ tid: 2, last_date: 1700000002 }] },
     // llms.txt 的精华主题清单
     { test: /FROM bbs_thread WHERE digest > 0/, rows: [{ tid: 2, subject: '你好世界' }] },
+    /* 右栏用户榜（/api/rank/users）：公共只读，无 viewer 维度 */
+    { test: /FROM bbs_user WHERE ok = 1 AND uid > 0 ORDER BY uid DESC/, rows: [{ uid: 1, username: 'admin', avatar: 0 }] },
     { test: /bbs_cache/, first: null },
   ];
 }
@@ -70,12 +75,52 @@ function envFor() {
   };
 }
 
+/** 用一条覆盖规则换掉 setting（其余规则沿用），供「站点级设置影响壳页注入」类断言使用 */
+function envWithSetting(patch: Record<string, unknown>) {
+  const base = { ...(JSON.parse(SETTING) as Record<string, unknown>), ...patch };
+  const fake = fakeD1Sql([
+    { test: /FROM bbs_kv/, first: (params: readonly unknown[]) => (params[0] === 'extensions' ? null : { v: JSON.stringify(base) }) },
+    ...rules().filter((r) => !/FROM bbs_kv/.test(r.test.source)),
+  ]);
+  return {
+    env: {
+      DB: fake.db,
+      CACHE: fakeKv(),
+      FILES: fakeR2(),
+      ASSETS: fakeAssets(),
+      SITE_URL: 'http://localhost',
+    },
+    calls: fake.calls,
+  };
+}
+
+/** 附件预览接口所需的数据面：公开件（credits=0）与受限期件（credits>0）共用 */
+function attachEnv(credits = 0) {
+  const fake = fakeD1Sql([
+    ...rules(),
+    {
+      test: /FROM bbs_attach WHERE aid = \?/,
+      first: {
+        aid: 42, uid: 1, tid: 2, filename: 'attach/202410/x.png', orgfilename: 'x.png',
+        filesize: 3, isimage: 1, status: 1, credits,
+      },
+    },
+  ]);
+  return {
+    env: { DB: fake.db, CACHE: fakeKv(), FILES: fakeR2(), ASSETS: fakeAssets(), SITE_URL: 'http://localhost' },
+    calls: fake.calls,
+  };
+}
+
 let edge: ReturnType<typeof fakeCaches>;
 beforeEach(() => {
   l0Clear();
   edge = fakeCaches();
   edge.install();
 });
+
+/** SWR 白名单接口会额外写一份 `fi-sw=stale` 副本：统计「新鲜副本」时必须把它排除 */
+const freshEntries = () => [...edge.entries.keys()].filter((k) => !/[?&]fi-sw=stale/.test(k));
 afterEach(() => {
   delete (globalThis as { caches?: unknown }).caches;
 });
@@ -98,7 +143,7 @@ describe('边缘缓存：游客只读接口', () => {
     const first = await hit('/api/threads');
     expect(first.res.headers.get('x-edge-cache')).toBe('MISS');
     const body1 = await first.res.json();
-    expect(edge.entries.size).toBe(1);
+    expect(freshEntries().length).toBe(1);
 
     const second = await hit('/api/threads', {}, envFor());
     expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
@@ -110,13 +155,13 @@ describe('边缘缓存：游客只读接口', () => {
   it('缓存副本带 max-age，下发给客户端的响应不带（MISS 与 HIT 同口径）', async () => {
     await hit('/api/threads');
     const stored = Array.from(edge.entries.values())[0]!;
-    expect(new Headers(stored.headers).get('cache-control')).toBe('public, max-age=30');
+    expect(new Headers(stored.headers).get('cache-control')).toBe('public, max-age=60');
     expect(stored.headers.some(([k]) => k.toLowerCase() === 'x-edge-cache')).toBe(false);
 
     const fresh = await hit('/api/threads?fid=1', {}, envFor());
     expect(fresh.res.headers.get('cache-control')).toBeNull();
 
-    // HIT 同样不得带 max-age：HTTP 缓存键不含 Cookie，游客在 30s 窗口内登录后重新拉
+    // HIT 同样不得带 max-age：HTTP 缓存键不含 Cookie，游客在副本有效期内登录后重新拉
     // /api/bootstrap 会被浏览器喂回「游客版」→ 认证态串扰（登录成功但顶栏仍是游客）。
     const second = await hit('/api/threads', {}, envFor());
     expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
@@ -126,44 +171,83 @@ describe('边缘缓存：游客只读接口', () => {
   it('查询串参与缓存键（分页/筛选各自成条目）', async () => {
     await hit('/api/threads?page=1');
     await hit('/api/threads?page=2');
-    expect(edge.entries.size).toBe(2);
+    expect(freshEntries().length).toBe(2);
     expect(Array.from(edge.entries.keys()).every((k) => k.includes('fi-ua=human'))).toBe(true);
   });
 
   it('登录轨 Cookie（sid/at/admin_at）绕开缓存：既不读也不写', async () => {
     const { res, source } = await hit('/api/threads', { cookie: 'csrf=token1; sid=abcdef' });
     expect(res.headers.get('x-edge-cache')).toBeNull();
-    expect(edge.entries.size).toBe(0);
+    expect(freshEntries().length).toBe(0);
     expect(((await res.json()) as { code: number }).code).toBe(0); // 登录链路完整走通，非错误信封
     expect(source.calls.length).toBeGreaterThan(0); // 走完整链路
   });
 
   it('Authorization 头绕开缓存', async () => {
     await hit('/api/threads', { authorization: 'Bearer x' });
-    expect(edge.entries.size).toBe(0);
+    expect(freshEntries().length).toBe(0);
   });
 
-  it('首访（尚无 csrf Cookie）穿透并签发 Cookie，第二次请求起才参与缓存', async () => {
-    const first = await hit('/api/threads', { cookie: '_ga=1' });
-    expect(first.res.headers.get('x-edge-cache')).toBeNull();
-    expect(first.res.headers.get('set-cookie')).toContain('csrf=');
-    expect(edge.entries.size).toBe(0); // 带 Set-Cookie 的响应不入边缘缓存
+  /* 右栏排行对登录用户放开边缘缓存（PUBLIC_READONLY）：响应体里没有任何按 uid/gid 定制的字段，
+     放开后登录用户（含站长）刷新首页时右栏聚合接口不再每次冷穿透 Worker + D1。 */
+  it('公共只读端点（排行）对登录轨也参与缓存；个人化端点仍绕开', async () => {
+    const login = { cookie: 'csrf=token1; sid=abcdef; at=x' };
+    const first = await hit('/api/rank/users?type=new&limit=16');
+    expect(first.res.headers.get('x-edge-cache')).toBe('MISS');
+    const body = await first.res.json();
+    expect(freshEntries().length).toBe(1);
 
-    await hit('/api/threads');
-    expect(edge.entries.size).toBe(1);
+    const second = await hit('/api/rank/users?type=new&limit=16', login, envFor());
+    expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(second.source.calls.length).toBe(0); // 命中即零 D1 / 零 session 查询
+    expect(await second.res.json()).toEqual(body);
+
+    // 反向保证：同一登录轨访问按访问者定制的列表接口仍然完全不参与缓存
+    const list = await hit('/api/threads', login);
+    expect(list.res.headers.get('x-edge-cache')).toBeNull();
+    expect(freshEntries().length).toBe(1);
   });
+
+  it('首访（尚无 csrf Cookie）：MISS 也回填（副本剥掉 csrf 头），第二个人起直接 HIT 并补签', async () => {
+    /* 首访请求本身仍会冷穿透（缓存里还没有东西），但这次 MISS 的产物必须落缓存：
+       否则「每个新访客的第一屏接口都冷穿透」，低流量时段边缘命中率接近 0。 */
+    const cold = await hit('/api/threads', { cookie: '_ga=1' });
+    expect(cold.res.headers.get('x-edge-cache')).toBe('MISS');
+    expect(cold.res.headers.get('set-cookie')).toContain('csrf='); // 下发给本次请求方的响应仍带签发
+
+    expect(freshEntries().length).toBe(1);
+    const stored = Array.from(edge.entries.values())[0]!;
+    // 副本里不得残留 Set-Cookie：同一份副本会发给所有游客，csrftoken 必须由 HIT 分支现场补签
+    expect(stored.headers.some(([k]) => k.toLowerCase() === 'set-cookie')).toBe(false);
+    // 副本 max-age 归边缘 TTL（不污染浏览器缓存）
+
+    const storedHeaders = new Headers(stored.headers);
+    expect(storedHeaders.get('cache-control')).toBe('public, max-age=60');
+
+    // 第二个首访（无 csrf Cookie）：HIT 且在响应上补签 csrf（与 csrf 中间件 GET 分支同口径），零 D1
+    const firstVisit = await hit('/api/threads', { cookie: '_ga=1' }, envFor());
+    expect(firstVisit.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(firstVisit.res.headers.get('set-cookie')).toContain('csrf=');
+    expect(firstVisit.source.calls.length).toBe(0);
+
+    // 已持 csrf 的请求不重复签发
+    const again = await hit('/api/threads', {}, envFor());
+    expect(again.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(again.res.headers.get('set-cookie')).toBeNull();
+  });
+
 
   it('路由抛错（主题不存在）不落缓存', async () => {
     const { res } = await hit('/api/threads/9');
     expect(((await res.json()) as { code: number }).code).toBeLessThan(0);
     expect(res.headers.get('cache-control')).toBe('no-store'); // envelope 显式声明，写入门槛据此拒绝
     expect(res.headers.get('x-edge-cache')).toBeNull();
-    expect(edge.entries.size).toBe(0);
+    expect(freshEntries().length).toBe(0);
   });
 
   it('非白名单接口（/api/me）不参与缓存', async () => {
     await hit('/api/me');
-    expect(edge.entries.size).toBe(0);
+    expect(freshEntries().length).toBe(0);
   });
 
   /* 右栏/聚合类端点在 §7 扩容前完全没有边缘缓存：游客每次 PV 都真打 Worker + D1。
@@ -172,6 +256,8 @@ describe('边缘缓存：游客只读接口', () => {
   it('右栏/聚合类只读接口均已纳入边缘缓存，且正则互不抢占', () => {
     const ttlOf = (path: string) => API_TTL.find(([re]) => re.test(path))?.[1];
     const required: Array<[string, number]> = [
+      // 版块简介多语言：发现页按需拉（bootstrap 不再携带），站点结构低频变更
+      ['/api/forums/briefs', 300],
       ['/api/online', 30],
       ['/api/posts/latest', 30],
       ['/api/rank/users', 600],
@@ -189,7 +275,7 @@ describe('边缘缓存：游客只读接口', () => {
     ];
     for (const [path, ttl] of required) expect(ttlOf(path), `${path} 的边缘 TTL`).toBe(ttl);
     // 详情页与 hot-posts 是同级路径，细节规则不能互相覆盖
-    expect(ttlOf('/api/threads/7')).toBe(60);
+    expect(ttlOf('/api/threads/7')).toBe(120);
     // 付费/写侧接口必须仍在白名单外
     for (const path of ['/api/me', '/api/orders/abc', '/api/my/favorites', '/api/threads/7/paylist']) {
       expect(ttlOf(path), `${path} 不应参与边缘缓存`).toBeUndefined();
@@ -200,12 +286,22 @@ describe('边缘缓存：游客只读接口', () => {
     const first = await hit('/api/insert-codes');
     expect(first.res.headers.get('x-edge-cache')).toBe('MISS');
     expect(first.source.calls.some((c) => /FROM bbs_kv/.test(c.sql))).toBe(true);
-    expect(edge.entries.size).toBe(1);
+    expect(freshEntries().length).toBe(1);
 
     const second = await hit('/api/insert-codes', {}, envFor());
     expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
     expect(second.source.calls.length).toBe(0);
     expect(await second.res.json()).toEqual(await first.res.json());
+  });
+
+  it('版块简介（发现页按需拉）命中边缘后不再查库', async () => {
+    const first = await hit('/api/forums/briefs');
+    expect(first.res.headers.get('x-edge-cache')).toBe('MISS');
+    expect(freshEntries().length).toBe(1);
+
+    const second = await hit('/api/forums/briefs', {}, envFor());
+    expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(second.source.calls.length).toBe(0);
   });
 
   it('无 Cache API 环境优雅降级（workers.dev / 本地预览）', async () => {
@@ -214,6 +310,76 @@ describe('边缘缓存：游客只读接口', () => {
     expect(res.headers.get('x-edge-cache')).toBeNull();
     expect(((await res.json()) as { code: number }).code).toBe(0);
     expect(source.calls.length).toBeGreaterThan(0);
+  });
+});
+
+describe('边缘缓存：公共图片（附件预览）', () => {
+  it('公开件按二进制共享键缓存：保留源头 max-age，命中后不再读 R2/D1', async () => {
+    const first = attachEnv();
+    await first.env.FILES.put('attach/202410/x.png', 'IMG', { httpMetadata: { contentType: 'image/png' } });
+    const a = await hit('/api/attachments/42/preview', {}, first as never);
+    expect(a.res.headers.get('x-edge-cache')).toBe('MISS');
+    expect(a.res.headers.get('cache-control')).toBe('public, max-age=86400');
+
+    expect(freshEntries().length).toBe(1);
+    const [key, stored] = Array.from(edge.entries.entries())[0]!;
+    // 二进制与语言/UA 无关：不编 fi-lang，人类与爬虫共用一份
+    expect(key).toContain('fi-ua=human');
+    expect(key).not.toContain('fi-lang');
+    // 副本保留源头 max-age（浏览器命中边缘后仍按 1 天缓存，不能退化成每次刷新都回源）
+    expect(new Headers(stored.headers).get('cache-control')).toBe('public, max-age=86400');
+
+    const second = await hit('/api/attachments/42/preview', { 'accept-language': 'en-US,en;q=0.9' }, attachEnv() as never);
+    expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(second.res.headers.get('cache-control')).toBe('public, max-age=86400');
+    expect(second.source.calls.length).toBe(0); // 不读 bbs_attach / bbs_thread / bbs_kv
+    expect(await second.res.text()).toBe('IMG');
+  });
+
+  it('受限期件（付费未购）不落缓存：响应为 no-store 错误信封', async () => {
+    const gated = attachEnv(10);
+    const res = await hit('/api/attachments/42/preview', {}, gated as never);
+    expect(res.res.headers.get('cache-control')).toBe('no-store');
+    expect(res.res.headers.get('x-edge-cache')).toBeNull();
+    expect(freshEntries().length).toBe(0);
+  });
+});
+
+describe('边缘缓存：手动 SWR（双副本 + 内部重放）', () => {
+  const isStaleKey = (k: string) => /[?&]fi-sw=stale/.test(k);
+  /** 模拟 fresh 副本到期：fakeCaches 不解析 max-age，直接删掉新鲜副本，只留 stale */
+  const expireFresh = () => {
+    for (const k of freshEntries()) edge.entries.delete(k);
+  };
+
+  it('fresh 过期后先返 stale 副本，并在后台把 fresh 重建出来', async () => {
+    const first = await hit('/api/threads');
+    const body = await first.res.json();
+    expect([...edge.entries.keys()].filter(isStaleKey)).toHaveLength(1);
+
+    expireFresh();
+    const staleHit = await hit('/api/threads', {}, envFor());
+    expect(staleHit.res.headers.get('x-edge-cache')).toBe('HIT-STALE');
+    // 陈旧副本同样不得把边缘 max-age 下发给浏览器
+    expect(staleHit.res.headers.get('cache-control')).toBeNull();
+    expect(await staleHit.res.json()).toEqual(body);
+
+    // 后台重放（waitUntil 内的进程内派发）应把 fresh 副本写回来
+    for (let i = 0; i < 60 && freshEntries().length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(freshEntries().length).toBe(1);
+  });
+
+  it('内层重放请求（x-fi-revalidate）不读 stale：杜绝「陈旧 → 重放 → 又读陈旧」自激', async () => {
+    await hit('/api/threads');
+    expireFresh();
+    const res = await hit('/api/threads', { 'x-fi-revalidate': '1' }, envFor());
+    expect(res.res.headers.get('x-edge-cache')).toBe('MISS');
+    expect(res.source.calls.length).toBeGreaterThan(0); // 真回源，而不是又给一份陈旧副本
+  });
+
+  it('白名单外的接口不写 stale 副本（避免无谓的缓存写放大）', async () => {
+    await hit('/api/rank/users?type=new&limit=16');
+    expect([...edge.entries.keys()].filter(isStaleKey)).toHaveLength(0);
   });
 });
 
@@ -259,7 +425,7 @@ describe('边缘缓存：sitemap.xml', () => {
     expect(first.source.calls.some((c) => /FROM bbs_thread WHERE ok = 1/.test(c.sql))).toBe(true);
 
     // 缓存副本与响应头口径一致：application/xml（非默认 HTML）+ max-age=3600
-    expect(edge.entries.size).toBe(1);
+    expect(freshEntries().length).toBe(1);
     const stored = Array.from(edge.entries.values())[0]!;
     const storedHeaders = new Headers(stored.headers);
     expect(storedHeaders.get('content-type')).toContain('application/xml');
@@ -277,7 +443,7 @@ describe('边缘缓存：sitemap.xml', () => {
     await hit('/sitemap.xml');
     const bot = await hit('/sitemap.xml', BOT, envFor());
     expect(bot.res.headers.get('x-edge-cache')).toBe('HIT');
-    expect(edge.entries.size).toBe(1);
+    expect(freshEntries().length).toBe(1);
   });
 });
 
@@ -286,7 +452,7 @@ describe('边缘缓存：爬虫预渲染前置', () => {
     const first = await hit('/thread/2', BOT);
     expect(await first.res.text()).toContain('你好世界');
     expect(first.source.calls.some((c) => /FROM bbs_thread/.test(c.sql))).toBe(true);
-    expect(edge.entries.size).toBe(1);
+    expect(freshEntries().length).toBe(1);
 
     const second = await hit('/thread/2', BOT, envFor());
     expect(await second.res.text()).toContain('你好世界');
@@ -299,5 +465,153 @@ describe('边缘缓存：爬虫预渲染前置', () => {
     const html = await human.res.text();
     expect(html).toContain('id="root"'); // SPA 壳，而非爬虫 HTML
     expect(Array.from(edge.entries.keys()).filter((k) => k.includes('fi-ua=human'))).toHaveLength(0);
+  });
+});
+
+describe('边缘缓存：SPA 壳 HTML（人类页面导航）', () => {
+  /** 计数的 ASSETS 替身：HIT 后不应再出现「取 index.html」这一次子请求 */
+  function countingEnv() {
+    const base = envFor();
+    const assets = fakeAssets();
+    let shellFetches = 0;
+    return {
+      env: {
+        ...base.env,
+        ASSETS: {
+          fetch: async (req: Request) => {
+            if (new URL(req.url).pathname === '/index.html') shellFetches++;
+            return assets.fetch(req);
+          },
+        },
+      },
+      calls: base.calls,
+      count: () => shellFetches,
+    };
+  }
+
+  it('首次 MISS 落边缘；二次 HIT 不再取 index.html 壳', async () => {
+    const s = countingEnv();
+    const first = await hit('/', {}, s as never);
+    expect(first.res.headers.get('x-edge-cache')).toBe('MISS');
+    expect(await first.res.text()).toContain('id="root"');
+    expect(s.count()).toBe(1);
+
+    const second = await hit('/', {}, s as never);
+    expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(s.count()).toBe(1);
+  });
+
+  it('任意深链共用同一条副本（键与请求路径无关）', async () => {
+    const s = countingEnv();
+    await hit('/', {}, s as never);
+    const deep = await hit('/thread/2', {}, s as never);
+    expect(deep.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(s.count()).toBe(1);
+    // 全站只占一条壳条目（键是固定 URL，不随深链摊薄）
+    expect(Array.from(edge.entries.keys()).filter((k) => k.endsWith('/__fi/spa-shell'))).toHaveLength(1);
+  });
+
+  it('浏览器短缓存：HIT 与 MISS 同口径（max-age=120，对齐 SHELL_TTL 陈旧窗口）', async () => {
+    const s = countingEnv();
+    const first = await hit('/', {}, s as never);
+    expect(first.res.headers.get('x-edge-cache')).toBe('MISS');
+    expect(first.res.headers.get('cache-control')).toBe('public, max-age=120');
+    const second = await hit('/', {}, s as never);
+    expect(second.res.headers.get('x-edge-cache')).toBe('HIT');
+    expect(second.res.headers.get('cache-control')).toBe('public, max-age=120');
+  });
+
+  it('站长轨（admin_at）跳过读缓存：改完设置/切完主题当场可见', async () => {
+    const s = countingEnv();
+    await hit('/', {}, s as never);
+    const admin = await hit('/', { cookie: 'csrf=token1; admin_at=tok' }, s as never);
+    expect(admin.res.headers.get('x-edge-cache')).not.toBe('HIT');
+    expect(s.count()).toBe(2);
+  });
+
+  it('爬虫不写壳条目（正文 HTML 由 prerender 自己的条目负责）', async () => {
+    const s = countingEnv();
+    await hit('/thread/2', BOT, s as never);
+    expect(Array.from(edge.entries.keys()).filter((k) => k.endsWith('/__fi/spa-shell'))).toHaveLength(0);
+  });
+
+  it('带扩展名的路径不参与壳缓存（/robots.txt 走自己的条目）', async () => {
+    const s = countingEnv();
+    await hit('/', {}, s as never);
+    const res = await hit('/robots.txt', {}, s as never);
+    expect(res.res.headers.get('x-edge-cache')).not.toBe('HIT');
+  });
+
+  it('壳页注入首屏预载：bootstrap 的 fetch 预载 + 站点语言的词条包 modulepreload', async () => {
+    const base = envFor();
+    const s = {
+      env: {
+        ...base.env,
+        ASSETS: fakeAssets({
+          '/assets/preload-map.json': JSON.stringify({ i18n: { 'zh-cn': 'assets/i18n-bbs-zh-cn-AAA.js' } }),
+        }),
+      },
+      calls: base.calls,
+    };
+    const html = await (await hit('/', {}, s as never)).res.text();
+    expect(html).toContain('as="fetch" href="/api/bootstrap" crossorigin="use-credentials"');
+    expect(html).toContain('rel="modulepreload" crossorigin href="/assets/i18n-bbs-zh-cn-AAA.js"');
+  });
+
+  it('壳页注入站点 favicon link（后台已配置时）：浏览器不再盲请求 /favicon.ico', async () => {
+    const html = await (await hit('/', {}, envFor() as never)).res.text();
+    expect(html).toContain('<link rel="icon" href="/files/site/favicon.png?v=1">');
+  });
+
+  it('favicon 多尺寸：标签页只取 32×32，另派生 192 与 apple-touch-icon（同一版本号）', async () => {
+    const env = envWithSetting({ favicon_url: '/files/site/favicon-32.png?v=99' });
+    const html = await (await hit('/', {}, env as never)).res.text();
+    expect(html).toContain('<link rel="icon" type="image/png" sizes="32x32" href="/files/site/favicon-32.png?v=99">');
+    expect(html).toContain('<link rel="icon" type="image/png" sizes="192x192" href="/files/site/favicon-192.png?v=99">');
+    expect(html).toContain('<link rel="apple-touch-icon" sizes="180x180" href="/files/site/favicon-180.png?v=99">');
+    // 原图直链不得再作为标签页图标下发（线上曾出现 830KB favicon）
+    expect(html).not.toContain('<link rel="icon" href="/files/site/favicon-32.png');
+  });
+
+  it('预载清单缺失（本地 dev / 旧产物）：壳页仍带 bootstrap 预载，功能不受影响', async () => {
+    const s = countingEnv(); // fakeAssets() 不含 preload-map.json → 404
+    const html = await (await hit('/', {}, s as never)).res.text();
+    expect(html).toContain('as="fetch" href="/api/bootstrap"');
+    expect(html).not.toContain('modulepreload" crossorigin href="/assets/i18n-bbs');
+  });
+
+  /* 字体是 font-display: swap：不预载不阻塞首屏文本，弱网下 123KB 与入口 JS 抢带宽得不偿失。
+     这里直接执行壳页注入的那段脚本，断言 navigator.connection 各档位的实际行为。 */
+  it('字体预载：正常网络预载中文首片，弱网/省流量跳过', async () => {
+    const html = await (await hit('/', {}, envFor() as never)).res.text();
+    const bootScript = /<script>(window\.__FI_THEME__[\s\S]*?)<\/script>/.exec(html)?.[1] ?? '';
+    expect(bootScript).toContain('window.__FI_THEME__');
+    const FONT = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v2-00.woff2';
+    const run = (nav: Record<string, unknown>): string[] => {
+      const appended: string[] = [];
+      const doc = {
+        documentElement: { lang: '' },
+        createElement: () => ({}) as Record<string, unknown>,
+        head: {
+          appendChild: (el: { href?: string }) => {
+            if (el.href) appended.push(el.href);
+          },
+        },
+      };
+      new Function('window', 'document', 'navigator', 'localStorage', 'location', bootScript)(
+        { __FI_CONTENT_LANG_MODE__: 0 },
+        doc,
+        nav,
+        { getItem: () => null },
+        { pathname: '/', search: '' },
+      );
+      return appended;
+    };
+    expect(run({ languages: ['zh-CN'] })).toContain(FONT);
+    expect(run({ languages: ['zh-CN'], connection: { effectiveType: '4g' } })).toContain(FONT);
+    expect(run({ languages: ['zh-CN'], connection: { saveData: true } })).not.toContain(FONT);
+    expect(run({ languages: ['zh-CN'], connection: { effectiveType: '3g' } })).not.toContain(FONT);
+    // 非中文界面本来就不预载这套字体
+    expect(run({ languages: ['en-US'] })).not.toContain(FONT);
   });
 });

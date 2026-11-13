@@ -12,11 +12,12 @@ import { Cache } from './cache';
 import { CRON_5MIN, CRON_DAILY, CRON_HOURLY } from './cron-schedule';
 import { queueGc } from './queue';
 import { getExtensions } from './extensions';
-import { reconcilePending, sweepStaleOrders } from './payment/orchestrator';
+import { reconcileCardOrders, reconcilePending, sweepStaleOrders } from './payment/orchestrator';
 import { demoteExpiredVip } from './order';
 import { liftExpiredBans } from './ban';
 import { seoRebuildRenamed } from '../modules/seo/generate';
 import { attachObjectKeys } from '../modules/attach/core';
+import { setRuntime } from '../modules/shared';
 
 export const ONLINE_HOLD_TIME_DEFAULT = 300;
 const DAY = 86400;
@@ -66,7 +67,7 @@ async function onlineHoldTime(db: D1b): Promise<number> {
 }
 
 export async function cronFiveMin(deps: CronDeps): Promise<CronFiveMinResult> {
-  const { db, cache, now } = deps;
+  const { db, now } = deps;
   const hold = await onlineHoldTime(db);
   const sessExpiry = now - hold;
   // sess_gc：本 schema 无 session_data 表（§D.8），仅清 session
@@ -74,8 +75,8 @@ export async function cronFiveMin(deps: CronDeps): Promise<CronFiveMinResult> {
   // 在线数刷新
   const cnt = await db.prepare<{ c: number }>('SELECT COUNT(*) AS c FROM bbs_session').first<{ c: number }>();
   const onlines = Math.max(1, Number(cnt?.c ?? 0));
-  const runtime = (await cache.get<Record<string, number>>('runtime')) ?? {};
-  await cache.set('runtime', { ...runtime, onlines });
+  // 只覆盖 onlines 键：原实现先读整对象再写回，会把并发发帖刚累加的 posts/threads 抹掉
+  await setRuntime(deps, { onlines });
   return { sessExpiry, onlines };
 }
 
@@ -147,14 +148,16 @@ export async function cronDaily(deps: CronDeps): Promise<CronDailyResult> {
   // today* 清零（缓存 + forum 表，单语句批刷）；runtime 一并写回校准后的全站数
   // （校准失败时保留 runtime 现值，仅清零 today*）
   try {
-    const runtime = (await cache.get<Record<string, number>>('runtime')) ?? {};
-    const next: Record<string, number> = { ...runtime, todayposts: 0, todaythreads: 0, todayusers: 0 };
+    // 只写本次真正需要改的键（today* 清零 + 校准值），绝不整对象覆盖并发增量
+    const next: Record<string, number> = { todayposts: 0, todaythreads: 0, todayusers: 0 };
     if (calibrated) {
       next.threads = calibrated.threads;
       next.posts = calibrated.posts;
     }
-    await cache.set('runtime', next);
-    await db.prepare('UPDATE bbs_forum SET todayposts = 0, todaythreads = 0').run();
+    await setRuntime({ db, cache }, next);
+    /* 只写仍有今日计数的行：SQLite 对「值未变」的行照样计 rows_written（D1 免费层按行计费），
+       无条件全表 UPDATE 会在大库上每天白写掉整个 forum 表的行数；加 WHERE 后写行数 = 当日有活动的版块数。 */
+    await db.prepare('UPDATE bbs_forum SET todayposts = 0, todaythreads = 0 WHERE todayposts > 0 OR todaythreads > 0').run();
     await cache.del('forumlist');
     res.forumReset = true;
   } catch (err) {
@@ -207,21 +210,28 @@ export async function attachGc(deps: CronDeps, now: number, limit = ATTACH_GC_BA
     .all();
   if (!stale.results.length) return 0;
 
+  // 顺序：先「条件删除 D1 行」，只有确实删掉（changes=1）的 aid 才去删 R2 对象。
+  // 反序（先删对象再删行）存在竞态：SELECT 与 DELETE 之间用户发帖把附件关联上（status→1、写 tid/pid），
+  // 对象已被删、行又被无条件删掉 → 已发布帖子里的图片/附件永久丢失。
+  // 代价是对象删除失败时行已不存在，孤儿对象由桶上 `tmp/` 生命周期规则兜底（原注释的兜底语义仍然成立）。
   const removed: number[] = [];
   for (const r of stale.results) {
+    const aid = Number(r.aid);
+    const del = await db
+      .prepare('DELETE FROM bbs_attach WHERE aid = ? AND status = 0 AND create_date < ?')
+      .bind(aid, now - DAY)
+      .run();
+    if (Number(del.meta?.changes ?? 0) === 0) continue; // 窗口内已被关联/已处理：跳过，绝不删对象
+    removed.push(aid);
     try {
       // 原件 + 缩略图一次批删（R2 批量删除按 1 个子请求计，不突破 ATTACH_GC_BATCH 的子请求预算）
       if (files && typeof files.delete === 'function') {
-        await Promise.resolve(files.delete(attachObjectKeys(Number(r.aid), String(r.filename))));
+        await Promise.resolve(files.delete(attachObjectKeys(aid, String(r.filename))));
       }
-      removed.push(Number(r.aid));
     } catch {
-      /* 尽力而为：对象没删掉就保留行，下轮重试（桶上 tmp/ 生命周期规则兜底） */
+      /* 尽力而为：对象没删掉成为孤儿，由桶上 tmp/ 生命周期规则最终清理 */
     }
   }
-  if (!removed.length) return 0;
-  const placeholders = removed.map(() => '?').join(',');
-  await db.prepare(`DELETE FROM bbs_attach WHERE aid IN (${placeholders})`).bind(...removed).run();
   return removed.length;
 }
 
@@ -294,6 +304,13 @@ export async function handleScheduled(
         console.log(`[cron:reconcile] scanned=${r.scanned} recovered=${r.recovered} failed=${r.failed}`);
       } catch (err) {
         console.warn('[cron:reconcile] failed:', err instanceof Error ? err.message : err);
+      }
+      // 卡密悬挂单：卡已核销但 markPaid 失败（订单仍 pending + claim 占位），按卡表订单号补发。
+      try {
+        const r = await reconcileCardOrders({ db, cache }, deps.now);
+        if (r.scanned) console.log(`[cron:card-reconcile] scanned=${r.scanned} recovered=${r.recovered} failed=${r.failed}`);
+      } catch (err) {
+        console.warn('[cron:card-reconcile] failed:', err instanceof Error ? err.message : err);
       }
       // 超期关单（C5）：>72h 仍 pending 的外部单逐单复核，已付补单、未付关单，
       // 兜住对账 24h 窗口之外的悬挂单（PayPal 会话有效期长于对账窗口）。

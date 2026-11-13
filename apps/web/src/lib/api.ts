@@ -2,6 +2,7 @@ import type {
   ApiEnvelope,
   BootstrapPayload,
   CreatePostReq,
+  ForumBriefsPayload,
   CreateThreadReq,
   LoginReq,
   ModThreadsReq,
@@ -45,6 +46,10 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 async function request(url: string, init?: RequestInit, timeoutMs = API_TIMEOUT_MS): Promise<Response> {
   const ctl = new AbortController();
+  // 内部 controller 只负责超时；外部 signal（React Query 的取消信号）通过 AbortSignal.any 合并，
+  // 否则路由/参数快速切换、组件卸载时旧请求无法取消，只会白等 20s 超时。
+  const outer = init?.signal;
+  const signal = outer ? AbortSignal.any([ctl.signal, outer]) : ctl.signal;
   // 只用「是否由本超时定时器中止」判定超时：页面卸载等原因的 abort 不该被误报成超时
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -52,7 +57,7 @@ async function request(url: string, init?: RequestInit, timeoutMs = API_TIMEOUT_
     ctl.abort();
   }, timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: ctl.signal });
+    return await fetch(url, { ...init, signal });
   } catch (e) {
     if (timedOut) throw new ApiTimeoutError();
     throw e;
@@ -80,6 +85,12 @@ function unwrap<T>(body: ApiEnvelope & { data?: T }): T {
 
 /** 读取 JSON 信封：Worker/反代返回 HTML 5xx 时不能直接 res.json()（SyntaxError 会绕过会话失效兜底） */
 async function envelopeOf(res: Response): Promise<ApiEnvelope & { data?: unknown }> {
+  // HTTP 401 兜底：反代/网关返回的 401 未必带业务信封（code 字段），只认 code 会让界面
+  // 继续显示「已登录」直到用户手动刷新。这里统一触发会话失效通知。
+  if (res.status === 401) {
+    sessionExpiredNotify?.();
+    throw new ApiError(Code.NOT_LOGIN, res.statusText || 'HTTP 401');
+  }
   const ct = res.headers.get('content-type') ?? '';
   if (!ct.includes('application/json')) {
     throw new ApiError(res.status >= 500 ? Code.SYSTEM_ERROR : res.status, res.statusText || `HTTP ${res.status}`);
@@ -97,9 +108,9 @@ async function sendWithCsrf<T>(doFetch: () => Promise<Response>): Promise<T> {
   return unwrap<T>(body as ApiEnvelope & { data?: T });
 }
 
-/** 信封解包（§6.1）：code<0 抛出；data 平铺返回 */
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await request(path, { credentials: 'include' });
+/** 信封解包（§6.1）：code<0 抛出；data 平铺返回；opts.signal 供 React Query 取消 */
+export async function apiGet<T>(path: string, opts?: { signal?: AbortSignal }): Promise<T> {
+  const res = await request(path, { credentials: 'include', ...(opts?.signal ? { signal: opts.signal } : {}) });
   return unwrap<T>((await envelopeOf(res)) as ApiEnvelope & { data?: T });
 }
 
@@ -109,20 +120,34 @@ function csrfToken(): string {
   return v ? decodeURIComponent(v) : '';
 }
 
-/** 写请求（T2-3 双提交）：非 GET 自动携带 X-CSRF-Token */
-export function apiSend<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, payload?: unknown): Promise<T> {
+/** 写请求（T2-3 双提交）：非 GET 自动携带 X-CSRF-Token；opts.signal 支持取消 */
+export function apiSend<T>(
+  method: 'POST' | 'PUT' | 'DELETE',
+  path: string,
+  payload?: unknown,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
   return sendWithCsrf<T>(() =>
     request(path, {
       method,
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
       body: payload === undefined ? undefined : JSON.stringify(payload),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
     }),
   );
 }
 
 export function bootstrap(): Promise<BootstrapPayload> {
   return apiGet<BootstrapPayload>('/api/bootstrap');
+}
+
+/**
+ * 版块简介多语言（0028）：bootstrap 不再下发（占整包 gzip 的 66%），只由发现页「全部版块」按需拉。
+ * 服务端按访问者可见版块过滤，并走边缘缓存（300s）。
+ */
+export function getForumBriefs(): Promise<ForumBriefsPayload> {
+  return apiGet<ForumBriefsPayload>('/api/forums/briefs');
 }
 
 /** 表单写请求：不设 Content-Type（浏览器带 multipart boundary），保留 CSRF + credentials，解信封同 apiSend */

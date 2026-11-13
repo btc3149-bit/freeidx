@@ -34,18 +34,29 @@ export interface SqlRule {
   test: RegExp;
   rows?: unknown[] | ((params: readonly unknown[]) => unknown[]);
   first?: unknown | null | ((params: readonly unknown[]) => unknown | null);
-  /** 模拟 D1 batch 语句的 meta.changes（扣减入账守卫用） */
-  changes?: number;
+  /** 模拟 D1 语句的 meta.changes（扣减入账守卫用）；函数形式可按参数返回不同值 */
+  changes?: number | ((params: readonly unknown[]) => number);
   /** 模拟该语句执行时抛错（如唯一约束冲突） */
   throws?: string;
 }
 
+/**
+ * 全局基础设施兜底规则（放在调用方规则之后，可被显式规则覆盖）：
+ * bbs_runtime 的 UPSERT/读取由 modules/shared 的 patchRuntime/loadRuntime 在几乎所有写路径触发，
+ * 逐测试补规则既冗长又易漏；这里只兜底这一张表，其余 SQL 仍未匹配即抛错（防漂移机制不变）。
+ */
+const INFRA_RULES: SqlRule[] = [
+  { test: /INSERT INTO bbs_runtime/, rows: [], changes: 1 },
+  { test: /SELECT k,v FROM bbs_runtime/, rows: [] },
+];
+
 /** 按 SQL 模式分发的测试替身（路由集成测试用；未匹配的 SQL 直接抛错防漂移） */
 export function fakeD1Sql(rules: SqlRule[]) {
   const calls: { sql: string; params: readonly unknown[] }[] = [];
+  const allRules = [...rules, ...INFRA_RULES];
   function resolve(sql: string, params: readonly unknown[]): SqlRule {
     calls.push({ sql, params });
-    const rule = rules.find((r) => r.test.test(sql));
+    const rule = allRules.find((r) => r.test.test(sql));
     if (!rule) throw new Error('fakeD1Sql unmatched SQL: ' + sql.replace(/\s+/g, ' '));
     return rule;
   }
@@ -67,11 +78,19 @@ export function fakeD1Sql(rules: SqlRule[]) {
       all: async () => {
         const rl = resolve(sql, params);
         maybeThrow(rl);
-        const r = rl.rows;
+        /* 读路径批量化后，原本用 first() 的单行查询会进 db.batch()（batch 只暴露 results 数组）。
+           规则里只写了 first 的用例在此按「单行结果集」处理，与真实 D1 的 batch 语义一致。 */
+        const r =
+          rl.rows ??
+          (rl.first === undefined
+            ? undefined
+            : (typeof rl.first === 'function' ? rl.first(params) : rl.first));
+        const changes = typeof rl.changes === 'function' ? rl.changes(params) : rl.changes;
+        const rows = typeof r === 'function' ? r(params) : r;
         return {
           success: true,
-          meta: rl.changes !== undefined ? { changes: rl.changes } : {},
-          results: (typeof r === 'function' ? r(params) : (r ?? [])) as never,
+          meta: changes !== undefined ? { changes } : {},
+          results: (rows == null ? [] : Array.isArray(rows) ? rows : [rows]) as never,
         };
       },
       raw: async () => {
@@ -81,7 +100,8 @@ export function fakeD1Sql(rules: SqlRule[]) {
       run: async () => {
         const rl = resolve(sql, params);
         maybeThrow(rl);
-        return { success: true, meta: rl.changes !== undefined ? { changes: rl.changes } : {} };
+        const changes = typeof rl.changes === 'function' ? rl.changes(params) : rl.changes;
+        return { success: true, meta: changes !== undefined ? { changes } : {} };
       },
     };
     return self as D1PreparedStatement;

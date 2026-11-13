@@ -67,8 +67,16 @@ export const putSetting = (patch: AdminSettingInput) => apiSend<AdminSettingMap>
 /** 站点 Logo / Favicon 上传（data URL，服务端落 R2 site/ 并写 kv setting，上传即生效）；delete* 恢复默认 */
 export const uploadSiteLogo = (data: string) => apiSend<{ logo_url: string }>('PUT', '/api/admin/setting/logo', { data });
 export const deleteSiteLogo = () => apiSend('DELETE', '/api/admin/setting/logo');
-export const uploadSiteFavicon = (data: string) => apiSend<{ favicon_url: string }>('PUT', '/api/admin/setting/favicon', { data });
+/** favicon 载荷：`{data}` 为老路径（原图单文件，.ico 走这条）；带 variants 时为 32/180/192 三档 PNG */
+export const uploadSiteFavicon = (payload: { data: string; variants?: Record<string, string> }) =>
+  apiSend<{ favicon_url: string }>('PUT', '/api/admin/setting/favicon', payload);
 export const deleteSiteFavicon = () => apiSend('DELETE', '/api/admin/setting/favicon');
+/**
+ * 导航项自定义图标上传（data URL，服务端落 R2 site/nav/ 只回直链）。
+ * 与 logo/favicon 不同：不写 setting —— 直链由「导航栏设置」写进对应行的 iconUrl，随 nav 一起保存。
+ */
+export const uploadNavIcon = (data: string) =>
+  apiSend<{ icon_url: string }>('PUT', '/api/admin/setting/nav-icon', { data });
 
 /** 邮箱设置（§11.3）：HTTP 邮件 API 账号池；Key 永不回显，留空即按账号身份保持原值 */
 export const getEmailSetting = () => apiGet<EmailSettingView>('/api/admin/email-setting');

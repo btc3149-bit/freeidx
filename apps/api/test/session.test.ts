@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../src/index';
 import { l0Clear } from '../src/core/cache';
 import { ACCESS_TOKEN_TTL, issueAccessToken, signJwt, verifyJwt } from '../src/core/auth/jwt';
+import { issueAdminToken, readAdminToken } from '../src/core/auth/admin';
 import { ipToLong } from '../src/core/auth/session';
 import { fakeD1Sql, fakeKv, type SqlRule } from './helpers/fake-d1';
 
@@ -29,13 +30,17 @@ function rules(extra: SqlRule[] = []): SqlRule[] {
     /* bootstrap 站点数据卡 runtime 计数（全站贴子/用户数） */
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_post$/, first: { c: 0 } },
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_user$/, first: { c: 0 } },
-    /* bootstrap「我的」计数卡（0002_social 关注/收藏、0006_notice 未读） */
+    /* bootstrap「我的」计数卡（0002_social 关注/收藏、0006_notice 未读）：
+       4 个标量子查询合并为一条 SQL（首屏性能项），单条 COUNT 规则不再命中它 */
+    { test: /AS followers/, first: { followers: 0, following: 0, favorites: 0, unread: 0 } },
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_follow/, first: { c: 0 } },
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_favorite/, first: { c: 0 } },
     { test: /SELECT COUNT\(\*\) AS c FROM bbs_notice/, first: { c: 0 } },
     { test: /bbs_forum_access/, rows: [] },
     { test: /FROM bbs_user WHERE uid = \?/, first: USER },
     { test: /bbs_cache/, first: null },
+    /* 在线数（bootstrap 随下发，L0/30s 读穿） */
+    { test: /SELECT COUNT\(\*\) AS c FROM bbs_session/, first: { c: 0 } },
     { test: /REPLACE INTO bbs_session/, rows: [] },
     { test: /SELECT uid,last_date FROM bbs_session/, first: null },
   ];
@@ -70,6 +75,21 @@ describe('JWT HS256（WebCrypto）', () => {
     const fresh = await issueAccessToken(SECRET, 1, 0);
     const p = await verifyJwt(fresh, SECRET);
     expect(p && p.exp - p.iat).toBe(ACCESS_TOKEN_TTL);
+  });
+
+  it('轨道隔离：前台 at 不能通过后台轨校验，admin_at 不能当前台令牌', async () => {
+    const at = await issueAccessToken(SECRET, 1, 7);
+    // 即使两轨共用同一 JWT_SECRET（ADMIN_JWT_SECRET 缺省回退），typ 也必须挡住跨轨复用
+    expect(await readAdminToken(at, SECRET)).toBeNull();
+    const adminAt = await issueAdminToken(SECRET, 1, 7);
+    expect(await verifyJwt(adminAt, SECRET, undefined, 'at')).toBeNull();
+    expect((await readAdminToken(adminAt, SECRET))?.uid).toBe(1);
+  });
+
+  it('畸形签名段/非法 base64url 一律返回 null，不抛 500', async () => {
+    expect(await verifyJwt('a.b.!!!', SECRET)).toBeNull();
+    expect(await verifyJwt('a.b.%%%', SECRET)).toBeNull();
+    expect(await verifyJwt('a.b', SECRET)).toBeNull();
   });
 });
 
@@ -122,7 +142,7 @@ describe('双轨合并', () => {
 
   it('>30min 且 token_version 不符 → 改密吊销，游客处理', async () => {
     const now = Math.floor(Date.now() / 1000);
-    const stale = await signJwt({ uid: 1, tv: 123, iat: now - 3600, exp: now + 3600 }, SECRET);
+    const stale = await signJwt({ uid: 1, tv: 123, iat: now - 3600, exp: now + 3600, typ: 'at' }, SECRET);
     const { env } = envFor(rules());
     const me = await meOf(env, `at=${stale}`);
     expect(me).toBeNull();
@@ -130,7 +150,7 @@ describe('双轨合并', () => {
 
   it('>30min 且 token_version 相符 → 放行', async () => {
     const now = Math.floor(Date.now() / 1000);
-    const ok = await signJwt({ uid: 1, tv: USER.token_version, iat: now - 3600, exp: now + 3600 }, SECRET);
+    const ok = await signJwt({ uid: 1, tv: USER.token_version, iat: now - 3600, exp: now + 3600, typ: 'at' }, SECRET);
     const { env } = envFor(rules());
     const me = await meOf(env, `at=${ok}`);
     expect(me?.uid).toBe(1);

@@ -1,19 +1,22 @@
 /**
  * 富文本编辑器（T2-10）：TipTap 产出 HTML（doctype=0，服务端写时定稿 sanitize）。
- * 工具栏：粗体/斜体/行内码/代码块/链接/图片上传（POST /api/attachments → 插 <img>，aid 计入 attachAids）。
+ * 工具栏：粗体/斜体/行内码/代码块/链接/图片上传（POST /api/attachments → 插 <img>，aid 计入 attachAids）/
+ *         插入视频（B 站 / YouTube / Vimeo / 优酷，落成可播放 iframe，见 VideoEmbed.ts）。
  * 引用回复：父级传 quoted 摘要展示，提交时自行带 quotepid。
  * turnstile=1 时在提交按钮上方挂人机验证挂件（发帖/回帖用）；token 一次性，提交后一律重挂换发。
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { EditorContent, useEditor, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Image as TiptapImage } from '@tiptap/extension-image';
 import Placeholder from '@tiptap/extension-placeholder';
+import { toVideoEmbed } from '@freeidx/shared';
 import { deleteAttachment, uploadAttachment } from '../lib/api';
 import { apiErrorMessage } from '../lib/errors';
 import { fileToWebpThumb } from '../lib/image';
 import { useT } from '../lib/i18n';
 import { Turnstile, turnstileDisabled } from './Turnstile';
+import { VideoEmbed } from './VideoEmbed';
 import { Button } from './ui';
 
 export interface ComposerChange {
@@ -48,9 +51,33 @@ interface ComposerProps {
   turnstile?: boolean;
   /** 收费帖组（allowsell）：工具栏出现「插入付费内容」按钮 */
   allowSell?: boolean;
+  /** 正文区高度类（默认 min-h-[8rem]；发帖页传固定高，把编辑区拉长到 700px 并在内部滚动） */
+  editorHeightClass?: string;
+  /** 隐藏底部提交栏（发帖页把「发表主题」并入内容语言行，右对齐显示） */
+  hideSubmitBar?: boolean;
+  /** 隐藏提交栏时的外部入口：页面按钮调用该 ref 即触发内部 submit（空正文 / 人机验证校验保持一致） */
+  submitRef?: MutableRefObject<(() => void) | null>;
   onChange?: (c: ComposerChange) => void;
   onSubmit?: (c: ComposerSubmit) => void | Promise<unknown>;
   onCancel?: () => void;
+}
+
+/**
+ * 剪贴板/拖拽里的图片文件（截图、本地文件）：命中即由前端先传到 R2 再插入正文。
+ * 带 text/html 的「网页内容」不拦截——保留默认粘贴（外链图片由服务端写时转存，
+ * 前端硬拦会连正文文字一起吞掉）。
+ */
+function imageFilesOf(dt: DataTransfer | null): File[] {
+  if (!dt || dt.types.includes('text/html')) return [];
+  const out: File[] = [];
+  const push = (f: File | null) => {
+    if (!f || !/^image\//i.test(f.type)) return;
+    if (out.some((x) => x.name === f.name && x.size === f.size)) return;
+    out.push(f);
+  };
+  for (const f of Array.from(dt.files ?? [])) push(f);
+  if (!out.length) for (const it of Array.from(dt.items ?? [])) if (it.kind === 'file') push(it.getAsFile());
+  return out;
 }
 
 function readDims(file: File): Promise<{ w: number; h: number }> {
@@ -83,6 +110,9 @@ export function Composer(props: ComposerProps) {
     busy,
     turnstile = false,
     allowSell = false,
+    editorHeightClass = 'min-h-[8rem]',
+    hideSubmitBar = false,
+    submitRef,
     onChange,
     onSubmit,
     onCancel,
@@ -99,23 +129,59 @@ export function Composer(props: ComposerProps) {
   onChangeRef.current = onChange;
   const fileRef = useRef<HTMLInputElement>(null);
   const rawRef = useRef<HTMLInputElement>(null);
+  /* editorProps 只在实例创建时读取一次，闭包里拿到的会是首帧的 onPickImage（editor 仍为 null）。
+     用 ref 转发每次渲染的最新实现，避免粘贴/拖入落空。 */
+  const pasteImagesRef = useRef<(files: File[]) => void>(() => undefined);
 
   const emit = (editor: Editor | null, list: UploadItem[]) => {
     onChangeRef.current?.({ html: editor ? editor.getHTML() : '', attachAids: list.map((a) => a.aid) });
   };
 
+  /**
+   * TipTap 的 `content` 只在挂载时读取一次：同一实例被复用到另一篇帖子（编辑态跨 tid 切换、
+   * 服务端刷新了 op.message）时，编辑器会继续显示旧内容，提交时把旧正文写到新 pid 上。
+   * 这里监听 initialHtml 变化显式 setContent（emitUpdate:false 防止回调污染父级状态）。
+   */
+  const appliedHtmlRef = useRef(initialHtml);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ link: { openOnClick: false, autolink: true } }),
       TiptapImage,
+      VideoEmbed.configure({ removeLabel: t('video_remove') }),
       Placeholder.configure({ placeholder }),
     ],
     content: initialHtml,
     editorProps: {
-      attributes: { class: 'min-h-[8rem] px-3 py-2 text-sm leading-6 text-foreground focus:outline-none break-words post-body' },
+      attributes: {
+        class: `${editorHeightClass} px-3 py-2 text-sm leading-6 text-foreground focus:outline-none break-words post-body`,
+      },
+      // 粘贴/拖入图片文件（截图、拷自其它应用）→ 直接上传 R2 并插入站内地址；顺序上传保证图片次序
+      handlePaste: (_view, event) => {
+        const files = imageFilesOf(event.clipboardData);
+        if (!files.length) return false;
+        event.preventDefault();
+        pasteImagesRef.current(files);
+        return true;
+      },
+      handleDrop: (_view, event) => {
+        const files = imageFilesOf(event.dataTransfer);
+        if (!files.length) return false;
+        event.preventDefault();
+        pasteImagesRef.current(files);
+        return true;
+      },
     },
-    onUpdate: ({ editor: e }) => emit(e, attachRef.current),
+    onUpdate: ({ editor: e }) => {
+      appliedHtmlRef.current = e.getHTML();
+      emit(e, attachRef.current);
+    },
   });
+
+  useEffect(() => {
+    if (!editor || initialHtml === appliedHtmlRef.current) return;
+    appliedHtmlRef.current = initialHtml;
+    editor.commands.setContent(initialHtml, { emitUpdate: false });
+  }, [editor, initialHtml]);
 
   const insertLink = () => {
     if (!editor) return;
@@ -123,9 +189,26 @@ export function Composer(props: ComposerProps) {
       editor.chain().focus().unsetLink().run();
       return;
     }
-    const url = window.prompt(t('enter_link_url'), 'https://');
+    const url = window.prompt(t('enter_link_url'), 'https://')?.trim();
     if (!url) return;
+    // 协议白名单：只接受 http(s) 与站内绝对路径，阻断 javascript:/data: 等可执行伪协议
+    if (!/^https?:\/\//i.test(url) && !url.startsWith('/')) return;
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+    emit(editor, attachRef.current);
+  };
+
+  /** 插入视频：分享链接 → 平台播放器 iframe（白名单与写时定稿共用 isVideoEmbedSrc） */
+  const insertVideo = () => {
+    if (!editor) return;
+    const raw = window.prompt(t('enter_video_url'), 'https://')?.trim();
+    if (!raw) return;
+    const v = toVideoEmbed(raw);
+    if (!v) {
+      setError(t('unsupported_video_url'));
+      return;
+    }
+    setError('');
+    editor.chain().focus().insertContent({ type: 'videoEmbed', attrs: { ...v } }).run();
     emit(editor, attachRef.current);
   };
 
@@ -148,6 +231,12 @@ export function Composer(props: ComposerProps) {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = '';
     }
+  };
+  // 每次渲染刷新粘贴/拖入的上传实现（editorProps 闭包只持有 ref，见上方说明）
+  pasteImagesRef.current = (files) => {
+    void (async () => {
+      for (const f of files) await onPickImage(f);
+    })();
   };
 
   /** 任意类型附件（§9 白名单由服务端把关，名单外自动改名 `_ext`）：仅入 attachAids，不插正文 */
@@ -182,7 +271,9 @@ export function Composer(props: ComposerProps) {
     if (!editor) return;
     const html = editor.getHTML();
     const text = html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
-    if (!text) {
+    // 纯视频帖（正文只有一个播放器）也算有内容，不能被「请输入内容」拦下
+    const hasVideo = /<iframe[^>]*\bsrc="[^"]+"/i.test(html);
+    if (!text && !hasVideo) {
       setError(t('please_input_message'));
       return;
     }
@@ -204,6 +295,12 @@ export function Composer(props: ComposerProps) {
       }
     }
   };
+
+  /**
+   * 外部按钮入口（发帖页把「发表主题」并入内容语言行）：渲染期同步最新闭包，
+   * 页面按钮调用 ref 即走本组件 submit —— 空正文 / 人机验证未完成的拦截与提示仍留在编辑器内。
+   */
+  if (submitRef) submitRef.current = () => void submit();
 
   const T = (name: string) => (editor?.isActive(name) ? 'bg-[rgba(41,151,247,0.1)] text-brand' : '');
 
@@ -247,6 +344,10 @@ export function Composer(props: ComposerProps) {
           {uploading ? t('uploading_dots') : t('attach_short')}
         </button>
         <input ref={rawRef} type="file" className="hidden" onChange={(e) => void onPickFile(e.target.files?.[0])} />
+        {/* 插入视频：粘贴/输入 B 站、YouTube 等分享链接，正文里落成可播放的 iframe */}
+        <button type="button" className={btn} disabled={!editor} onClick={insertVideo}>
+          {t('insert_video')}
+        </button>
         {/* 表情面板：126 张 emoicon，插入 <img class="em_icon"> */}
         <button type="button" className={`${btn} ${emojiOpen ? 'bg-[rgba(41,151,247,0.1)] text-brand' : ''}`} disabled={!editor} onClick={() => setEmojiOpen((v) => !v)}>
           {t('emoji_label')}
@@ -300,7 +401,7 @@ export function Composer(props: ComposerProps) {
       )}
       {turnstile && <Turnstile key={tsNonce} onToken={setTsToken} />}
       {error && <p className="px-3 pb-2 text-xs text-destructive">{error}</p>}
-      {onSubmit && (
+      {!hideSubmitBar && onSubmit && (
         <div className="flex items-center gap-2 border-t border-border px-3 py-2">
           <Button
             type="button"

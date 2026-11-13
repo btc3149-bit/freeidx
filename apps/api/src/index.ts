@@ -8,7 +8,7 @@ import { AVAILABLE_LOCALES, DEFAULT_LOCALE, localizedSetting, siteDescriptionOf,
 import type { Env } from './types/env';
 import { D1b } from './core/db';
 import { Cache } from './core/cache';
-import { edgeCache } from './core/cache/edge';
+import { edgeCache, setSwrDispatcher, shellCache } from './core/cache/edge';
 import { ok, handleError, handleNotFound } from './middleware/envelope';
 import { runlevel } from './middleware/runlevel';
 import { csrf } from './middleware/csrf';
@@ -21,8 +21,10 @@ import { getExtensions } from './core/extensions';
 import { classifyUserAgent, matchRegisteredPath } from './core/crawler';
 import { prerender, seoCoreRoutes } from './modules/seo/core';
 import { loadSetting } from './core/loaders';
+import { loadPreloadMap, shellPreloadTags } from './core/preload-map';
+import { listPreloadScript, threadPreloadScript } from './core/shell-preload';
 import { loadThemeId } from './core/theme';
-import { escAttr } from './core/fmt';
+import { escAttr, iconLinkTags } from './core/fmt';
 import { acceptLangOf, createApiT, t0, type ApiT } from './core/i18n';
 import { threadRoutes } from './modules/thread/routes';
 import { bootstrapRoutes } from './modules/bootstrap/routes';
@@ -80,28 +82,42 @@ app.use('*', async (c, next) => {
   if (stats.d1Queries > 40) c.res.headers.set('X-Db-Queries-Warn', String(stats.d1Queries));
 });
 
-app.use(
-  '*',
-  cors({
-    // 白名单化（§20.4 安全项）：credentials:true 下反射任意 Origin = 任意外站可携 Cookie 跨域读响应。
-    // 多域名部署下「站点自身域」按请求 Host 动态判定（各绑定域名各自同源），另放行本地 dev（vite 5173，
-    // dev proxy /api→8787 为同源请求）；白名单外一律回落请求域——ACAO 与请求 Origin 不符 → 浏览器直接
-    // 拒绝跨域读取，不产生暴露。不读 SITE_URL：部署变量可能未配置或与实际绑定域名不一致。
-    origin: (origin, c) => {
-      const self = requestOrigin(c);
-      if (!origin) return self; // 同源/curl：不构成跨域暴露
-      const allow = new Set([self, 'http://localhost:5173', 'http://127.0.0.1:5173']);
-      return allow.has(origin) ? origin : self;
-    },
-    credentials: true,
-    // Authorization：MCP 端点（/mcp）用 Bearer 令牌鉴权，浏览器型 MCP 客户端会带它做 preflight；
-    // Mcp-Protocol-Version / MCP-Protocol-Version：客户端协商协议版本用，不放行会被预检拦掉
-    allowHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'Mcp-Protocol-Version', 'MCP-Protocol-Version'],
-    exposeHeaders: ['X-Db-Queries-Warn', 'X-Edge-Cache', 'MCP-Protocol-Version'],
-  }),
-);
+/**
+ * CORS 只挂 /api（历史上是 `'*'`）：壳页与静态资源都是同源访问，跨域头对它们毫无意义，
+ * 却会带来两个真实副作用 ——
+ *   ① `Vary: Origin` 让 CDN/浏览器把壳页视为按 Origin 变化，直接挡掉壳页的边缘缓存；
+ *   ② 每个 HTML 响应白背 ~200 字节的 ACAO/ACEH/expose 头。
+ * 收窄后壳页响应只剩内容协商本身的头，可被 shellCache() 正常缓存。
+ */
+const corsMiddleware = cors({
+  // 白名单化（§20.4 安全项）：credentials:true 下反射任意 Origin = 任意外站可携 Cookie 跨域读响应。
+  // 多域名部署下「站点自身域」按请求 Host 动态判定（各绑定域名各自同源），另放行本地 dev（vite 5173，
+  // dev proxy /api→8787 为同源请求）；白名单外一律回落请求域——ACAO 与请求 Origin 不符 → 浏览器直接
+  // 拒绝跨域读取，不产生暴露。不读 SITE_URL：部署变量可能未配置或与实际绑定域名不一致。
+  origin: (origin, c) => {
+    const self = requestOrigin(c);
+    if (!origin) return self; // 同源/curl：不构成跨域暴露
+    const allow = new Set([self, 'http://localhost:5173', 'http://127.0.0.1:5173']);
+    return allow.has(origin) ? origin : self;
+  },
+  credentials: true,
+  // Authorization：MCP 端点（/mcp）用 Bearer 令牌鉴权，浏览器型 MCP 客户端会带它做 preflight；
+  // Mcp-Protocol-Version / MCP-Protocol-Version：客户端协商协议版本用，不放行会被预检拦掉
+  allowHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'Mcp-Protocol-Version', 'MCP-Protocol-Version'],
+  exposeHeaders: ['X-Db-Queries-Warn', 'X-Edge-Cache', 'MCP-Protocol-Version'],
+});
+/**
+ * 只对 /api（含裸 `/api`）生效。用显式判断而不是 `app.use('/api/*')`：
+ * Hono 的 cors 用 `headers.append('Vary', 'Origin')`，同一请求命中两条挂载会写成
+ * "Origin, Origin"，比不收窄还脏。
+ */
+app.use('*', async (c, next) => {
+  if (c.req.path !== '/api' && !c.req.path.startsWith('/api/')) return next();
+  return corsMiddleware(c, next);
+});
 // 多域名收敛（canonical host）：页面导航落到非主域名时 301 到后台「站点网址」。
-// 必须紧跟 cors（跳转响应同样要带跨域头），先于 edgeCache（避免备用域命中缓存后无法收敛）。
+// 先于 edgeCache / shellCache（避免备用域命中缓存后无法收敛）；两个缓存都以 origin 为键，
+// 收敛必须在它们之前发生。
 app.use('*', canonicalHostRedirect());
 
 // 边缘响应缓存（§7 读取屏障）：游客匿名只读接口命中即返回，不走 runlevel 的 setting 查询。
@@ -115,6 +131,15 @@ app.use('*', edgeCache());
 //  - 其余前台接口：cookie `lang`（LangSwitch setPref 写入，非 httpOnly，同域自动携带；
 //    值必须在 AVAILABLE_LOCALES 内，非法值忽略）> Accept-Language 匹配到的可选 locale > setting.lang。
 // SEO 产物（sitemap/prerender）是全站性内容，仍按 setting.lang 生成，不参与用户协商。
+//
+// ⚠️ 审计结论（别再尝试「给静态路径收窄本中间件以省 KV/读」）：
+//  - 本中间件的 loadSetting 与 runlevel（紧随其后，除 /api/health 与 /mcp 外所有路径都要查档位）、
+//    notFound 的壳注入共用同一次装载（remember 的请求级去重，见 core/cache/index.ts 的 loaded），
+//    即一次请求只有 1 次真实读；
+//  - 因此「跳过 i18n」既不省 KV 读也不省 D1 读——省下的只有一次 Map 查找，而档位闸门仍要读同一个 key；
+//    真正决定读数速率的是 core/cache/index.ts 的 L0_MAX_TTL（30s）：它决定「每 isolate 每 30s 最多
+//    1 次 KV 读」，调大等于放大后台设置的跨 isolate 生效延迟，属产品参数而非代码优化；
+//  - 兜底已就位：envelope 的 tOf 与 runlevel 的 `?? t0` 都按 zh-cn 取词，缺 t 不会变成 500。
 function cookieLangOf(header: string | undefined): string | null {
   const m = /(?:^|;\s*)lang=([^;]+)/.exec(header ?? '');
   if (!m?.[1]) return null;
@@ -144,6 +169,13 @@ app.use('*', async (c, next) => {
   await next();
 });
 app.use('*', runlevel);
+/**
+ * 壳页（SPA HTML）边缘缓存：必须挂在 runlevel **之后** ——
+ * 关闭/只读档位不缓存壳，否则访客会看到「正常打开」的页面而接口全在报错。
+ * 命中即省掉「ASSETS.fetch 取 index.html + 主题/设置装载 + 注入」整段；
+ * 键与请求路径无关，全站深链共用一条副本（见 core/cache/edge.ts 的 shellCache）。
+ */
+app.use('*', shellCache());
 // 小黑屋闸门（0025）：禁言/禁访/禁登按位拦截，须在 runlevel 之后（借其 setting 装载）、csrf 之前
 // （被封用户的写请求无需再付一次 CSRF 校验）。/api/auth/* 与 /api/admin/* 在中间件内豁免。
 app.use('*', banGuard());
@@ -242,13 +274,29 @@ app.route('/', adminMcpRoutes());
 app.route('/', seoCoreRoutes());
 // 后续模块逐个挂载（forum/post/my/mod/attach/admin/kv）
 
+/**
+ * 手动 SWR 的内部重放派发器（见 core/cache/edge.ts 的 SWR_STALE）：
+ * 陈旧副本命中后，用同一套请求头在 waitUntil 里再走一遍应用，让正常 MISS 路径把 fresh 副本写回。
+ * 走进程内派发而不是 fetch 自己：少一次真实往返，也不用处理 same-zone 与缓存键的坑。
+ */
+setSwrDispatcher(async (request, env, ctx) => app.fetch(request, env, ctx as unknown as ExecutionContext));
+
 app.onError(handleError);
 
 /**
- * 中文字体子集路径（与 apps/web/src/styles/globals.css 的 @font-face 同源，改文件名须同步两处）。
- * 仅中文界面预载：非中文界面根本不引用这套字体（见 globals.css 的 --font-app），预载会白下 454KB。
+ * 中文字体「第 00 片」路径（完整分片清单见 apps/web/src/styles/font-faces.generated.css，
+ * 改分片参数须同步本处文件名 —— 两边对不上就是白下一个 404）。
+ *
+ * 只预载第 00 片：它是 UI 文案 + 最常用汉字，任何中文页面都会用到（约 123KB）；
+ * 其余 11 片由浏览器按 unicode-range 在真实渲染到片内字符时才取，提前预载等于白下。
+ * 仅中文界面预载：非中文界面根本不引用这套字体（见 globals.css 的 --font-app）。
+ *
+ * **弱网不预载**：字体是 `font-display: swap`，不预载也不会阻塞首屏文本（先用系统字体渲染，
+ * 到了再换），而 123KB 在 2g/3g 上与入口 JS/CSS 抢带宽的代价远大于收益。判断用
+ * `navigator.connection`（Chromium 系；Safari/Firefox 没有该对象 → 按原行为预载），
+ * 命中 `saveData` 或 effectiveType 为 slow-2g/2g/3g 时跳过。
  */
-const CJK_FONT_URL = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v1.woff2';
+const CJK_FONT_URL = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v2-00.woff2';
 
 /**
  * SPA 壳引导注入：在业务脚本之前写死「启用主题 id + 前台语言」，前端首帧即可用。
@@ -260,9 +308,13 @@ const CJK_FONT_URL = '/fonts/HarmonyOS_Sans_SC_Medium.subset.v1.woff2';
  *  - `<html lang>`：落 CSS 用的语言标记，让 --font-app 从一开始就选中正确字体。按完整协商链取值：
  *    用户偏好（localStorage）> 浏览器语言（navigator.languages）> 站点语言 —— 与 lib/i18n 的
  *    initialLocale 同序，避免首帧先按站点语言下字体、挂载后再换（中文站点的英文浏览器访客同理）。
- *  - 中文界面顺带预载字体：字体是首屏最大的单一资源，等 CSS 解析到 @font-face 才发起太晚。
+ *  - 中文界面顺带预载字体第 00 片：该片是 UI 文案用字，任何中文页面必然用到；
+ *    等 CSS 解析到 @font-face 才发起太晚，而其余分片按 unicode-range 按需取，不该预载。
  *
  *  - `<title>` / `<meta description>` / OG：壳页本身带有站点级语义，见下方 metaHtml。
+ *  - 首屏预载（`preloadHtml`）：词条包的 modulepreload + `/api/bootstrap` 的 fetch preload。
+ *    这两项原本都要等入口 chunk 执行后才发起，写进 HTML 就能与入口 chunk 并行下载，
+ *    少一个 RTT（生成与匹配见 core/preload-map.ts）。
  *
  * 注入失败（读壳失败/无 </head>）一律原样返回，前端会回落到「同名接口 + 默认主题 + 默认语言」。
  */
@@ -270,10 +322,18 @@ async function injectShell(
   res: Response,
   themeId: string,
   siteLang: string,
-  site: { title: string; description: string } | null = null,
+  site: { title: string; description: string; favicon?: string; contentLang?: number } | null = null,
+  preloadHtml = '',
 ): Promise<Response> {
   try {
     const html = await res.text();
+    /**
+     * 内容语言默认筛选模式（0=关闭 1=默认全部 2=跟随界面语言，见 SiteSetting.contentLang）。
+     * 只下发站点级设置，不含任何访客数据；与 title/description 同属壳页语义，共用 60s 缓存窗口。
+     * 前端首帧据此决定列表是否带 `?lang=`，否则 bootstrap 到达前模式恒为 0，
+     * 首页会先发一次无 lang 的列表请求、到达后再带 lang 重发一次（实测两次跨洋请求）。
+     */
+    const contentLangMode = Math.min(2, Math.max(0, Number(site?.contentLang ?? 0) || 0));
     /**
      * 内联脚本无法 import，语言匹配规则是 shared/i18n/locales.ts 的 matchBrowserLocale 的**镜像**
      * （完全一致 → 中文按 hant/tw/hk/mo 分流 → 同主语言），改动必须同步两处。
@@ -282,6 +342,7 @@ async function injectShell(
     const script =
       `<script>window.__FI_THEME__=${JSON.stringify(themeId)};` +
       `window.__FI_LANG__=${JSON.stringify(siteLang)};` +
+      `window.__FI_CONTENT_LANG_MODE__=${JSON.stringify(contentLangMode)};` +
       `var FI_L=${JSON.stringify(AVAILABLE_LOCALES)};` +
       `function fiM(a){for(var i=0;i<a.length;i++){var t=String(a[i]||"").toLowerCase().replace(/_/g,"-");` +
       `if(!t)continue;if(FI_L.indexOf(t)>=0)return t;var b=t.split("-")[0];` +
@@ -290,7 +351,12 @@ async function injectShell(
       `var fiG=null;try{fiG=localStorage.getItem("freeidx.lang")}catch(e){}` +
       `if(!fiG||FI_L.indexOf(fiG)<0)fiG=fiM(navigator.languages||[navigator.language])||${JSON.stringify(siteLang)};` +
       `document.documentElement.lang=fiG;` +
-      `try{if(/^zh/.test(fiG)){var k=document.createElement("link");` +
+      threadPreloadScript() +
+      listPreloadScript() +
+      /* 字体预载：弱网/省流量跳过（字体是 swap，不预载只是晚一点换字体，不阻塞文本） */
+      `try{var fc=navigator.connection||navigator.mozConnection||navigator.webkitConnection;` +
+      `var fs=!!(fc&&(fc.saveData||/^(slow-2g|2g|3g)$/.test(fc.effectiveType||"")));` +
+      `if(/^zh/.test(fiG)&&!fs){var k=document.createElement("link");` +
       `k.rel="preload";k.as="font";k.type="font/woff2";k.crossOrigin="";` +
       `k.href=${JSON.stringify(CJK_FONT_URL)};document.head.appendChild(k)}}catch(e){}</script>`;
     /**
@@ -302,6 +368,11 @@ async function injectShell(
      */
     const metaHtml = site
       ? [
+          /* 站点图标前置注入（后台 favicon_url，R2 site/ 直链）：浏览器解析到 link 后
+           * 不会再盲请求 /favicon.ico（那会白付一次 Worker 全链路再 404）；图标随 HTML 即时出现，
+           * 不必等 JS 启动后由 App.tsx 再设。爬虫侧 prerender 同一口径（seo/core.ts）。
+           * 多尺寸派生见 core/fmt.ts 的 iconLinkTags：标签页只取 32×32，避免下载数百 KB 原图。 */
+          site.favicon ? iconLinkTags(site.favicon) : '',
           site.description ? `<meta name="description" content="${escAttr(site.description)}">` : '',
           `<meta property="og:type" content="website">`,
           `<meta property="og:title" content="${escAttr(site.title)}">`,
@@ -314,9 +385,9 @@ async function injectShell(
         : html;
     // 优先注入 </head>（脚本在任何业务脚本之前求值）；无 head 时退化到 </body>；都没有则原样返回文本
     const out = shell.includes('</head>')
-      ? shell.replace('</head>', `${metaHtml}${script}</head>`)
+      ? shell.replace('</head>', `${preloadHtml}${metaHtml}${script}</head>`)
       : shell.includes('</body>')
-        ? shell.replace('</body>', `${metaHtml}${script}</body>`)
+        ? shell.replace('</body>', `${preloadHtml}${metaHtml}${script}</body>`)
         : null;
     if (out === null) return new Response(html, res);
     const headers = new Headers(res.headers);
@@ -385,11 +456,26 @@ app.notFound(async (c) => {
   const siteLang = setting && AVAILABLE_LOCALES.includes(setting.lang) ? setting.lang : DEFAULT_LOCALE;
   /* 站点级语义按站点语言取词（与 newPageMeta 的爬虫产物同一口径，不随访客界面语言变） */
   const site = setting ? localizedSetting(setting, siteLang) : null;
+  /**
+   * 首屏预载：词条包（`main.tsx` 里唯一阻塞 createRoot 的动态 import）+ bootstrap 请求。
+   * 清单读不到（本地 dev / 旧产物）时仍会给出 bootstrap 那一条纯静态标签，功能不受影响。
+   */
+  const preloadHtml = shellPreloadTags(await loadPreloadMap(c.env, c.req.url), siteLang);
   return injectShell(
     res,
     themeId,
     siteLang,
-    site ? { title: siteTitleOf(site), description: siteDescriptionOf(site) } : null,
+    site
+      ? {
+          title: siteTitleOf(site),
+          description: siteDescriptionOf(site),
+          /* localizedSetting 原样透传非文本字段，favicon_url 可直接取 */
+          favicon: site.favicon_url ? String(site.favicon_url) : '',
+          /* 内容语言默认筛选模式：让前端首帧就能算出列表的 ?lang=，不必等 bootstrap */
+          contentLang: Number(site.contentLang ?? 0),
+        }
+      : null,
+    preloadHtml,
   );
 });
 

@@ -173,7 +173,8 @@ export function modRoutes(): Hono<ReadEnv> {
         if (top === Number(thread.top)) continue; // thread_top_change：值未变不动
         stmts.push(
           db.prepare('UPDATE bbs_thread SET top = ? WHERE tid = ?').bind(top, tid) as unknown as Stmt,
-          db.prepare('INSERT OR REPLACE INTO bbs_thread_top (tid,fid,top) VALUES (?,?,?)').bind(tid, fid, top) as unknown as Stmt,
+          /* top_at 记录本次置顶时间：同级多帖置顶时列表按它倒序（新置顶在前，见 0034） */
+          db.prepare('INSERT OR REPLACE INTO bbs_thread_top (tid,fid,top,top_at) VALUES (?,?,?,?)').bind(tid, fid, top, ts) as unknown as Stmt,
         );
 
         modlogs.push(logRow(v.uid, thread, 'top', ts));
@@ -186,7 +187,7 @@ export function modRoutes(): Hono<ReadEnv> {
         if (Number(thread.top) === 0) continue;
         stmts.push(
           db.prepare('UPDATE bbs_thread SET top = 0 WHERE tid = ?').bind(tid) as unknown as Stmt,
-          db.prepare('INSERT OR REPLACE INTO bbs_thread_top (tid,fid,top) VALUES (?,?,?)').bind(tid, fid, 0) as unknown as Stmt,
+          db.prepare('INSERT OR REPLACE INTO bbs_thread_top (tid,fid,top,top_at) VALUES (?,?,?,?)').bind(tid, fid, 0, 0) as unknown as Stmt,
         );
 
         modlogs.push(logRow(v.uid, thread, 'top', ts));
@@ -302,7 +303,7 @@ export function modRoutes(): Hono<ReadEnv> {
     if (touchedForumlist) await cache.del('forumlist');
 
 
-    if (purgedTids.length) await patchRuntime(cache, { threads: -purgedTids.length });
+    if (purgedTids.length) await patchRuntime({ db, cache }, { threads: -purgedTids.length });
     if (seoTids.length) await invalidateSeo({ db, cache }, c, seoTids);
 
     const rt = await getExtensions(cache, db, undefined, { preloadConfigs: false });
@@ -359,8 +360,8 @@ export function modRoutes(): Hono<ReadEnv> {
     await cache.del(`user:${uid}`);
     await cache.del('forumlist');
 
-    if (tids.length) await patchRuntime(cache, { threads: -tids.length });
-    await patchRuntime(cache, { users: -1 });
+    if (tids.length) await patchRuntime({ db, cache }, { threads: -tids.length });
+    await patchRuntime({ db, cache }, { users: -1 });
     await invalidateSeo({ db, cache }, c, tids);
 
     // R2 对象尽力删除（失败不影响一致性）：附件（本人上传 + 本人主题内他人上传）+ 头像（键可由 uid 推导）

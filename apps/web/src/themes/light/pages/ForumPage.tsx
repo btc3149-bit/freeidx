@@ -5,11 +5,12 @@ import { CONTENT_LANG_NATIVE_NAMES, Code, GroupId, type ContentLang } from '@fre
 import { useAuth } from '../../../store/auth';
 import { useLight } from '../../../store/theme';
 import { ApiError, apiGet, modThreads } from '../../../lib/api';
-import { posInt } from '../../../lib/params';
+import { idParam, posInt } from '../../../lib/params';
 import { useForumName, useLocalizedName, useT } from '../../../lib/i18n';
 import { NotFoundPage } from './NotFoundPage';
 import { Pagination } from '../../../components/Pagination';
 import { ThreadList, type ThreadPageData } from '../../../components/ThreadList';
+import { ThreadListSkeleton } from '../../../components/ThreadListSkeleton';
 import { ContentLangBar } from '../../../components/ContentLangBar';
 import { useContentLangFilter, useContentLangMode } from '../../../store/contentLang';
 import { Alert, Card, CardTabs, CardTitle, CreateButton, HomeSideNav, Modal, SidePanel, TagBadge, TwoCol, cx } from '../../../components/ui';
@@ -59,7 +60,8 @@ const tagChip = 'inline-flex shrink-0 items-center rounded-full border border-zh
 export function ForumPage() {
   const params = useParams();
   const [search] = useSearchParams();
-  const fid = posInt(params.fid);
+  // 非法 fid 归 0（后端 forumNotFound → 页面 404），不得回落 1 而展示另一个版块
+  const fid = idParam(params.fid) ?? 0;
   const page = posInt(search.get('page'));
   const digest = search.get('digest') === '1' ? 1 : 0;
   const orderby = search.get('orderby') === 'lastpid' ? 'lastpid' : 'tid';
@@ -86,9 +88,10 @@ export function ForumPage() {
   const contentLang = useContentLangFilter();
   const q = useQuery({
     queryKey: ['threads', fid, page, digest, orderby, curTag, contentLang],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGet<ForumPageData>(
         `/api/forums/${fid}/threads?page=${page}${digest ? '&digest=1' : ''}&orderby=${orderby}${curTag ? `&tag=${encodeURIComponent(curTag)}` : ''}${contentLang ? `&lang=${encodeURIComponent(contentLang)}` : ''}`,
+        { signal },
       ),
     placeholderData: keepPreviousData,
   });
@@ -346,6 +349,8 @@ export function ForumPage() {
           bodyClass="p-0"
         >
           {q.isError && <p className="px-5 py-6 text-center text-sm text-destructive">{(q.error as Error).message}</p>}
+          {/* 首次进入（无缓存页）：列表骨架 + 加载中提示，替代此前的空白卡片正文 */}
+          {!q.data && q.isPending && <ThreadListSkeleton />}
           {q.data && (
             <ThreadList
               data={q.data}

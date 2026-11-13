@@ -31,7 +31,7 @@ import { loadForumlist, loadGrouplist, loadSetting } from '../../core/loaders';
 import { canSeeUnapproved, hasSeeCheck } from '../../core/check';
 import { cursorCond } from '../../core/db/paginate';
 import { POST_PAGE_COLS, THREAD_DETAIL_COLS, THREAD_LIST_COLS, USER_PUBLIC_COLS } from '../../core/db/columns';
-import { redactPaidBlocks } from '../../modules/shared';
+import { loadRuntime, redactPaidBlocks } from '../../modules/shared';
 import { L } from '../../core/i18n';
 
 /** 工具业务错误：server 层统一转成 MCP `isError`（让模型自行纠正参数），不占用 JSON-RPC 错误码 */
@@ -396,17 +396,22 @@ async function search(args: Record<string, unknown>, ctx: McpCallCtx): Promise<M
       params.push(lk);
     }
   }
-  const where = `WHERE (${conds.join(' AND ')}) AND fid IN (${fids.map(() => '?').join(',')})`;
+  // 审核可见性下推（与 Web 搜索同口径），避免待审/回收站行占用分页配额
+  const mod = await loadModeration(cache, db, ctx.principal.gid, ctx.principal.uid);
+  const okCond = mod.seeCheck
+    ? ' AND bbs_thread.ok <> -2'
+    : ' AND (bbs_thread.ok = 1 OR (bbs_thread.uid = ? AND bbs_thread.ok <> -2))';
+  const okParams = mod.seeCheck ? [] : [ctx.principal.uid];
+  const where = `WHERE (${conds.join(' AND ')}) AND fid IN (${fids.map(() => '?').join(',')})${okCond}`;
   const cnt = await db
     .prepare<{ c: number }>(`SELECT COUNT(*) AS c FROM bbs_thread ${where}`)
-    .bind(...params, ...fids)
+    .bind(...params, ...fids, ...okParams)
     .first<{ c: number }>();
   const r = await db
     .prepare<ThreadRow>(`SELECT ${THREAD_LIST_COLS} FROM bbs_thread ${where} ORDER BY tid DESC LIMIT ? OFFSET ?`)
-    .bind(...params, ...fids, size, (page - 1) * size)
+    .bind(...params, ...fids, ...okParams, size, (page - 1) * size)
     .all();
 
-  const mod = await loadModeration(cache, db, ctx.principal.gid, ctx.principal.uid);
   const list = threadListAccessFilter(actx, r.results)
     .filter((t) => canSeeUnapproved(Number(t.ok), { seeCheck: mod.seeCheck, isAuthor: mod.isAuthor(Number(t.uid)) }))
     .map(threadBrief);
@@ -443,7 +448,7 @@ async function userGet(args: Record<string, unknown>, ctx: McpCallCtx): Promise<
 
 async function siteInfo(_args: Record<string, unknown>, ctx: McpCallCtx): Promise<McpToolResult> {
   const setting = await loadSetting(ctx.cache, ctx.db);
-  const runtime = (await ctx.cache.get<Record<string, number>>('runtime')) ?? {};
+  const runtime = await loadRuntime({ db: ctx.db, cache: ctx.cache });
   return {
     text: JSON.stringify(
       {

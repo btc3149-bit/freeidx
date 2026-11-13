@@ -2,12 +2,14 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { BanScope, effectiveBanScope } from '@freeidx/shared';
 import { useParams, useSearchParams } from 'react-router';
 import { useAuth } from '../../../store/auth';
-import { apiGet, fmtDate } from '../../../lib/api';
+import { fmtDate } from '../../../lib/api';
 import { posInt } from '../../../lib/params';
 import { siteThreadsQuery } from '../../../lib/queries';
 import { InsertCode, useInsertCodes } from '../../../components/InsertCode';
 import { Pagination } from '../../../components/Pagination';
 import { ThreadList } from '../../../components/ThreadList';
+import { ThreadListSkeleton } from '../../../components/ThreadListSkeleton';
+import { Skeleton } from '../../../components/Skeleton';
 import { AnnouncementBar } from '../../../components/AnnouncementBar';
 import { ContentLangBar } from '../../../components/ContentLangBar';
 import { useContentLangFilter } from '../../../store/contentLang';
@@ -22,6 +24,7 @@ import {
   QuickHelpCard,
   SidePanel,
   UserSideCard,
+  UserSideCardSkeleton,
 } from '../../../components/ui';
 import { HotFavoritesCard, RankThreadCard, RankUserCard } from '../../../components/rank';
 import { useT, useGroupName } from '../../../lib/i18n';
@@ -42,6 +45,8 @@ export function HomePage() {
   const forumlist = useAuth((s) => s.forumlist);
   const grouplist = useAuth((s) => s.grouplist);
   const me = useAuth((s) => s.me);
+  /* bootstrap 是否已落库：右栏据此区分「游客」与「还不知道是不是游客」，避免先渲染游客卡再翻成用户卡 */
+  const authLoaded = useAuth((s) => s.loaded);
   /** 小黑屋（0025）：生效范围按 banUntil 惰性判定（bootstrap 可能命中缓存，不带实时性承诺） */
   const banScope = me ? effectiveBanScope(me.banScope, me.banUntil, Math.floor(Date.now() / 1000)) : 0;
   const runtime = useAuth((s) => s.runtime);
@@ -70,12 +75,8 @@ export function HomePage() {
   const contentLang = useContentLangFilter();
   const q = useQuery({ ...siteThreadsQuery(page, digest, orderby, contentLang), placeholderData: keepPreviousData });
 
-  /** 在线数（GET /api/online?summary=1 只回 total；不带参数会连同 500 行会话列表一起下发） */
-  const online = useQuery({
-    queryKey: ['online'],
-    queryFn: () => apiGet<{ total: number }>('/api/online?summary=1'),
-    staleTime: 60_000,
-  });
+  /** 在线数：随 bootstrap 下发（原先是一次独立的 GET /api/online?summary=1） */
+  const onlineCount = useAuth((s) => s.online);
 
   const totalThreads = forumlist.reduce((s, f) => s + f.threads, 0);
 
@@ -88,7 +89,7 @@ export function HomePage() {
     [totalThreads, t('threads'), 'zt'],
     [runtime?.posts ?? 0, t('posts_count'), 'tz'],
     [runtime?.users ?? 0, t('users'), 'user'],
-    [online.data?.total ?? 0, t('online_count'), 'zx'],
+    [onlineCount, t('online_count'), 'zx'],
   ];
 
   return (
@@ -137,6 +138,8 @@ export function HomePage() {
           {/* 内容语言筛选条（后台开启后显示；关闭时组件返回 null，连分隔线都不出现） */}
           <ContentLangBar wrap="bar" />
           {q.isError && <p className="px-5 py-6 text-center text-sm text-destructive">{(q.error as Error).message}</p>}
+          {/* 首次进入（无缓存页）：列表骨架 + 加载中提示，替代此前的空白卡片正文 */}
+          {!q.data && q.isPending && <ThreadListSkeleton />}
           {q.data && <ThreadList data={q.data} baseHref={pageHref} />}
           {q.data && (
             <div className="border-t border-zh-line px-4 py-3">
@@ -167,8 +170,11 @@ export function HomePage() {
               />
               <QuickHelpCard uid={me.uid} />
             </>
-          ) : (
+          ) : authLoaded ? (
             <GuestCard />
+          ) : (
+            /* bootstrap 未回：同构骨架。此前这里是整块不渲染，返回时所有卡片一起下移 */
+            <UserSideCardSkeleton />
           ))}
         {/* 每日签到卡片（checkin 插件启用时渲染，停用零残留） */}
         <CheckinCard />
@@ -180,7 +186,20 @@ export function HomePage() {
         {light.siteInfoTotal && (
           <SidePanel pad="p-4">
             <p className="mb-2 text-sm font-medium text-card-header-ink">{t('site_stats')}</p>
-            <CardStats items={stats} />
+            {/* 站点数据全来自 bootstrap：未落库时先给同构骨架，避免 4 个 0 一闪再变真实值 */}
+            {authLoaded ? (
+              <CardStats items={stats} />
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4" aria-hidden="true">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="flex items-center gap-2.5">
+                    <Skeleton className="size-6 shrink-0" radius="rounded-full" />
+                    <Skeleton className="h-3 w-14" />
+                    <Skeleton className="ml-auto h-3.5 w-6" />
+                  </div>
+                ))}
+              </div>
+            )}
           </SidePanel>
         )}
         {/* 用户榜（新会员/活跃） */}

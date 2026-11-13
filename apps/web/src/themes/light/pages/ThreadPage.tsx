@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { Code, PageSize, type FavoriterItem, type FrontKey, type HotPostsData, type PostItem, type ThreadDetail } from '@freeidx/shared';
 import { ApiError, apiGet, checkAudit, createReply, deletePost, fetchPostReplies, fetchQuickReplyMessage, fmtDate, getThreadPaylist, modThreads, payThread, recycleThread, toggleFavorite, toggleLike, togglePostLike, updatePost } from '../../../lib/api';
 import { apiErrorMessage } from '../../../lib/errors';
-import { posInt } from '../../../lib/params';
+import { idParam, posInt } from '../../../lib/params';
 import { AttachRows } from '../../../components/AttachRows';
 import { Avatar } from '../../../components/Avatar';
 import type { ComposerSubmit, QuotedSummary } from '../../../components/Composer';
@@ -14,10 +14,13 @@ import { InsertCode, useInsertCodes } from '../../../components/InsertCode';
 import { Pagination } from '../../../components/Pagination';
 import { PmButton } from '../../../components/PmButton';
 import { PostCard } from '../../../components/PostCard';
+import { RelatedThreads } from '../../../components/RelatedThreads';
+import { ThreadSkeleton } from '../../../components/ThreadSkeleton';
+import { ThreadToc } from '../../../components/ThreadToc';
 import { VBadge } from '../../../components/VBadge';
 import { NotFoundPage } from './NotFoundPage';
 import { Turnstile, turnstileDisabled } from '../../../components/Turnstile';
-import { Alert, Breadcrumb, Button, Card, Modal, TagBadge, cx } from '../../../components/ui';
+import { Alert, Breadcrumb, Button, Card, Modal, TagBadge, cx, inputCls } from '../../../components/ui';
 import { useReadUnread } from '../../../hooks/useReadUnread';
 import { LG_UP, useMediaQuery } from '../../../hooks/useMediaQuery';
 import { useAuth } from '../../../store/auth';
@@ -84,13 +87,14 @@ const alertBtn =
   'inline-flex h-8 items-center rounded-[4px] border border-[#868e96] px-3 text-xs text-[#868e96] transition-colors hover:bg-[#868e96] hover:text-white disabled:opacity-50';
 /** 左侧悬浮工具栏圆钮：白底圆形，hover/激活主色，48px */
 const barBtn =
-  'flex size-12 items-center justify-center rounded-full border border-zh-line bg-card text-lt-grey transition-colors hover:text-brand disabled:opacity-50';
+  'flex size-12 cursor-pointer select-none items-center justify-center rounded-full border border-zh-line bg-card text-lt-grey transition-colors hover:text-brand disabled:cursor-not-allowed disabled:opacity-50';
 /** 版务小圆钮（保持原尺寸，仅管理员可见） */
 const barBtnSm =
-  'flex size-10 items-center justify-center rounded-full border border-zh-line bg-card text-lt-grey transition-colors hover:text-brand disabled:opacity-50';
-/** 左侧悬浮工具栏计数徽标（圆钮下方，胶囊形灰蓝底白字） */
+  'flex size-10 cursor-pointer select-none items-center justify-center rounded-full border border-zh-line bg-card text-lt-grey transition-colors hover:text-brand disabled:cursor-not-allowed disabled:opacity-50';
+/** 左侧悬浮工具栏计数徽标（圆钮下方，胶囊形灰蓝底白字）
+ * 纯展示：不可选中、不接收鼠标事件——否则点击数字会出现文本插入光标 / 选中数字 */
 const barBadge =
-  'inline-flex min-w-[20px] items-center justify-center rounded-full bg-[#8a94a6] px-1.5 py-0.5 text-[12px] leading-none font-semibold text-white tabular-nums';
+  'pointer-events-none inline-flex min-w-[20px] cursor-default select-none items-center justify-center rounded-full bg-[#8a94a6] px-1.5 py-0.5 text-[12px] leading-none font-semibold text-white tabular-nums';
 
 /** 标题样式（h4 级：text-base font-medium；关闭话题置灰） */
 function getTitleCls(th: { digest: number; closed: number }): string {
@@ -186,7 +190,8 @@ export function ThreadPage() {
   const navigate = useNavigate();
   const openAuth = useAuthModal((s) => s.openAuth);
   const qc = useQueryClient();
-  const tid = posInt(params.tid);
+  // 非法 tid 归 0（后端 NOT_FOUND → 页面 404），不得回落 1 而展示另一篇帖子
+  const tid = idParam(params.tid) ?? 0;
   const page = posInt(params.page);
   const [quoted, setQuoted] = useState<QuotedSummary | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -210,6 +215,7 @@ export function ThreadPage() {
   });
   const [quickSel, setQuickSel] = useState(0);
   const [opEditing, setOpEditing] = useState(false);
+  const [opSubject, setOpSubject] = useState('');
   const [opErr, setOpErr] = useState('');
   const refresh = useAuth((s) => s.refresh);
   const forumlist = useAuth((s) => s.forumlist);
@@ -354,8 +360,7 @@ export function ThreadPage() {
   const queryKey = ['thread', tid, page];
   const q = useQuery({
     queryKey,
-    queryFn: () =>
-      apiGet<ThreadDetail>(`/api/threads/${tid}?page=${page}`),
+    queryFn: ({ signal }) => apiGet<ThreadDetail>(`/api/threads/${tid}?page=${page}`, { signal }),
     placeholderData: keepPreviousData,
   });
 
@@ -486,7 +491,9 @@ export function ThreadPage() {
           doctype: 0,
           quotepid: vars.quotepid,
           message: vars.html,
-          messageFmt: vars.html,
+          // 乐观项不写未净化 HTML：服务端写时定稿 sanitize，直接用编辑器原文注入 DOM 会绕过净化。
+          // 提交后 onSettled 以服务端真值刷新。
+          messageFmt: '',
           images: 0,
           files: 0,
           createDate: Math.floor(Date.now() / 1000),
@@ -519,18 +526,21 @@ export function ThreadPage() {
   });
 
   const edit = useMutation({
-    mutationFn: (vars: { pid: number; change: { html: string; attachAids: number[] }; contentBuy?: number; contentBuyType?: number }) =>
+    mutationFn: (vars: { pid: number; change: { html: string; attachAids: number[]; subject?: string }; contentBuy?: number; contentBuyType?: number }) =>
       updatePost(vars.pid, {
         message: vars.change.html,
         doctype: 0,
         attachAids: vars.change.attachAids,
+        // 首帖编辑可改标题（服务端仅 isfirst 生效）；楼层编辑不带该字段
+        ...(vars.change.subject !== undefined ? { subject: vars.change.subject } : {}),
         // 首帖编辑携带收费设置（否/空数 → content_buy=0）
         ...(vars.contentBuy !== undefined ? { contentBuy: vars.contentBuy, contentBuyType: vars.contentBuyType } : {}),
       }),
     onMutate: async (vars) => {
       await qc.cancelQueries({ queryKey });
+      // 只更新纯文本 message；messageFmt 保留服务端已净化的旧值，避免乐观阶段把未净化 HTML 直接渲染
       const prev = mutateList((list) =>
-        list.map((p) => (p.pid === vars.pid ? { ...p, message: vars.change.html, messageFmt: vars.change.html } : p)),
+        list.map((p) => (p.pid === vars.pid ? { ...p, message: vars.change.html } : p)),
       );
       return { prev };
     },
@@ -538,8 +548,10 @@ export function ThreadPage() {
       if (ctx?.prev) qc.setQueryData(queryKey, ctx.prev);
       throw e;
     },
-    onSettled: () => {
+    onSettled: (_d, _e, vars) => {
       void qc.invalidateQueries({ queryKey: ['thread', tid] });
+      // 标题变更同步版块/首页列表里的主题标题
+      if (vars.change.subject !== undefined) void qc.invalidateQueries({ queryKey: ['threads'] });
     },
   });
 
@@ -631,6 +643,7 @@ export function ThreadPage() {
   /** 进入首帖编辑：收费设置初值取主题现值 */
   const startOpEdit = () => {
     if (!th) return;
+    setOpSubject(th.subject ?? '');
     setOpSellOn(th.contentBuy > 0);
     setOpSellNum(th.contentBuy > 0 ? String(th.contentBuy) : '');
     setOpSellType(th.contentBuyType > 0 ? th.contentBuyType : 1);
@@ -686,13 +699,18 @@ export function ThreadPage() {
   /* 404 页：主题不存在或已删除（后端 NOT_FOUND）→ 整页 404 替代错误行；其余错误原样展示 */
   if (q.isError && q.error instanceof ApiError && q.error.code === Code.NOT_FOUND) return <NotFoundPage />;
 
+  /* 首屏数据未到位（含切页以外的首次进入）：整页骨架占位。
+   * 此前这里什么也不渲染，只剩底部「返回」按钮悬在空白背景上，很像页面出错；
+   * 出错时（q.isError）不进骨架，继续走下面的错误行 + 返回按钮。 */
+  if (!d && !q.isError) return <ThreadSkeleton />;
+
   return (
     <>
       <div className="flex flex-col gap-5 lg:flex-row">
         {/* ============ 左侧悬浮工具栏（thread_left_switch：仅 lg+）============ */}
         {th && d && light.threadLeftSwitch && (
           <div className="hidden w-14 shrink-0 lg:block">
-            <div className="sticky top-[88px] z-10 flex flex-col items-center gap-3">
+            <div className="sticky top-[88px] z-10 flex select-none flex-col items-center gap-3">
               <div className="flex flex-col items-center gap-1.5">
                 <button type="button" className={barBtn} title={t('reply_label')} aria-label={t('reply_label')} onClick={() => focusReply()}>
                   <Icon name="chat_bubbles" className="size-[25px]" />
@@ -957,21 +975,31 @@ export function ThreadPage() {
               {op ? (
                 opEditing ? (
                   <div>
+                    {/* 首帖编辑可改标题（与发帖页口径一致：128 上限、非空校验） */}
+                    <input
+                      className={cx(inputCls, 'mb-2 w-full')}
+                      placeholder={t('subject')}
+                      maxLength={128}
+                      value={opSubject}
+                      onChange={(e) => setOpSubject(e.target.value)}
+                    />
                     <LazyComposer
                       initialHtml={op.message ?? ''}
                       submitLabel={t('save')}
                       busy={edit.isPending}
                       allowSell={canSell && opSellOn}
-                      onSubmit={(c) =>
-                        edit
+                      onSubmit={(c) => {
+                        const subject = opSubject.trim();
+                        if (!subject) throw new Error(t('please_input_subject'));
+                        return edit
                           .mutateAsync({
                             pid: op.pid,
-                            change: { html: c.html, attachAids: c.attachAids },
+                            change: { html: c.html, attachAids: c.attachAids, subject },
                             // 收费设置（非 allowsell 组不带此二参，服务端忽略）
                             ...(canSell ? { contentBuy: opSellOn ? Number(opSellNum || 0) : 0, contentBuyType: opSellType } : {}),
                           })
-                          .then(() => setOpEditing(false))
-                      }
+                          .then(() => setOpEditing(false));
+                      }}
                       onCancel={() => setOpEditing(false)}
                     />
                     {/* 收费设置（首帖 + allowsell 组；「购买 :」+ 是/否，选「是」现数字与币种） */}
@@ -1018,6 +1046,7 @@ export function ThreadPage() {
                 ) : (
                   <>
                     <article
+                      id="thread-first-post"
                       className="post-body break-words text-sm leading-[1.7]"
                       onClick={(e) => {
                         // 付费块内交互由事件委托处理（renderPayHtml 产出纯 HTML）：支付按钮开确认弹层、购买记录走 SPA 路由
@@ -1072,6 +1101,9 @@ export function ThreadPage() {
 
           {/* 插入代码 thread_message_after_htm：主贴内容卡之后，每页一次 */}
           <InsertCode html={insertCodes.thread_message_after_htm} />
+
+          {/* 相关帖子（related 插件：主贴下方、评论区上方；仅第 1 页，停用/无内容时零残留） */}
+          {page === 1 && <RelatedThreads tid={tid} />}
 
           {/* ============ 快捷回复卡（#comment_input，位于楼层列表之前）============ */}
           {d && th && (
@@ -1313,6 +1345,8 @@ export function ThreadPage() {
                   </div>
                 </div>
               </section>
+              {/* 文章目录（toc 插件：右栏作者卡下方；停用/标题不足时零残留，仅第 1 页有首帖） */}
+              <ThreadToc sourceId="thread-first-post" post={op} />
               {/* 插入代码 thread_user_after_htm：侧栏「关于盘主」卡之后 */}
               <InsertCode html={insertCodes.thread_user_after_htm} />
             </>

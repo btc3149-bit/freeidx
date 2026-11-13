@@ -69,7 +69,7 @@ export async function purgeThread(
       for (const gc of ups) await rt.bus.emit('user:group-changed', gc);
     }
   }
-  await patchRuntime(cache, { threads: -1 });
+  await patchRuntime({ db, cache }, { threads: -1 });
   await cache.del('forumlist');
   await scheduleSeo({ db, cache }, c, tid, 'del');
   purgeR2Objects(c.env, await getExecCtx(c), attachKeys);
@@ -111,12 +111,25 @@ export function checkRoutes(): Hono<ReadEnv> {
     } else if (act === 1) {
       // 回帖：check_set_post_check（仅 isfirst=0；opt=-2 → 真删）
       if (opt === -2) {
+        // 跨版块真删防护：see_check 只授予审核资格，不可据此真删无版务权版块的正常回帖
+        // （与 act=0 主题真删的 purgeThread 同一口径；此前该分支漏了 guard，可越权删任意版块回帖并级联删 R2 附件）
+        const meta = await db
+          .prepare<{ fid: number }>(
+            'SELECT t.fid FROM bbs_post p INNER JOIN bbs_thread t ON t.tid = p.tid WHERE p.pid = ? AND p.isfirst = 0',
+          )
+          .bind(id)
+          .first<{ fid: number }>();
+        if (!meta) throw new AppError(Code.NOT_FOUND, t('common.postNotFound'));
+        const forumlist = await loadForumlist(cache, db);
+        if (!forumAccessMod(makeAccessCtx(v, forumlist, grouplist), Number(meta.fid), 'allowdelete')) {
+          throw new AppError(Code.NO_PERMISSION, t('check.noPerm'));
+        }
         const purge = await postPurgeStmts(db, id);
         if (purge) {
           // 积分回扣条目与附件 key 须在删除语句执行前读取
           const attachKeys = await attachKeysByPid(db, id);
           await db.batch(purge.stmts);
-          await patchRuntime(cache, { posts: -1 });
+          await patchRuntime({ db, cache }, { posts: -1 });
           await cache.del(`user:${purge.uid}`);
           // 与 write 真删同口径：回帖真删要回扣作者已发放的 post_* 积分并按新经验重算等级组
           await revokeForPostDelete({ db, cache }, [{ uid: purge.uid, isfirst: 0, pid: id }]);
@@ -174,8 +187,8 @@ export function checkRoutes(): Hono<ReadEnv> {
           await db.batch(stmts);
           await cache.del(`user:${id}`);
           await cache.del('forumlist');
-          if (tids.length) await patchRuntime(cache, { threads: -tids.length });
-          await patchRuntime(cache, { users: -1 });
+          if (tids.length) await patchRuntime({ db, cache }, { threads: -tids.length });
+          await patchRuntime({ db, cache }, { users: -1 });
           for (const tid of tids) await scheduleSeo({ db, cache }, c, tid, 'del');
           const ex = await getExecCtx(c);
           purgeR2Objects(c.env, ex, attachKeys);
@@ -187,6 +200,13 @@ export function checkRoutes(): Hono<ReadEnv> {
           }
         }
       } else {
+        // 与 opt=-2 同口径：审核接口不得改动管理组（gid<6）账号的审核态，
+        // 否则任一获授 see_check 的组都能把管理员/版主置为待审或拒绝。
+        const target = await db
+          .prepare<{ gid: number }>('SELECT gid FROM bbs_user WHERE uid = ?')
+          .bind(id)
+          .first<{ gid: number }>();
+        if (target && Number(target.gid) < 6) throw new AppError(Code.NO_PERMISSION, t('guard.denied'), {}, 403);
         await db.prepare('UPDATE bbs_user SET ok = ? WHERE uid = ?').bind(opt, id).run();
         await cache.del(`user:${id}`);
       }

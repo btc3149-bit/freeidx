@@ -6,7 +6,7 @@
  *  DELETE /api/posts/:pid             删除（isfirst→主题级联删；回帖 lastpid 回退）
  * 计数回写在 DB.batch() 事务内完成；读路径零 sanitize——定稿只在写侧发生。
  * 事件发射点（契约②）：post:created / post:updated / post:deleted / thread:created / thread:deleted / user:group-changed。
- * runtime 计数走缓存键 'runtime'（无 bbs_runtime 表）；mypost 倒排由本模块真实维护。
+ * runtime 计数走 bbs_runtime 表（原子 UPSERT，见 modules/shared.ts）；mypost 倒排由本模块真实维护。
  * 人机验证：发帖/回帖在参数解析后立刻校验 Turnstile token（附录 B 覆盖 登录/注册/发帖/回帖/找回密码/发码），早于任何 D1 读写。
  */
 import { Hono, type Context } from 'hono';
@@ -23,6 +23,7 @@ import { ipToLong } from '../../core/auth/session';
 import { verifyTurnstile } from '../../core/turnstile';
 import { revokeAffectedUids, revokeForPostDelete, threadRevokeEntries, upgradeGroupsByCredits } from '../../core/points';
 import { associateAttachments } from '../attach/routes';
+import { localizeRemoteImages } from '../attach/remote';
 import { scheduleSeo } from '../seo/generate';
 import { getExecCtx, intParam, patchRuntime, readJson, type ReadEnv } from '../shared';
 import {
@@ -165,10 +166,16 @@ async function updatePost(c: Ctx): Promise<Response> {
   if (!canUpdatePost(ctx, fid, Number(post.uid)) && !modAllow) throw new AppError(Code.NO_PERMISSION, t('common.noEditPerm'));
   if (!modAllow && Number(thread.closed) > 0) throw new AppError(Code.NO_PERMISSION, t('write.threadClosed'));
 
-  const message = (b.message ?? '').toString();
+  let message = (b.message ?? '').toString();
   if (!message.trim()) throw new AppError(Code.VALIDATION_ERROR, t('write.contentRequired'));
   // 编辑上限 2048000（与创建上限 2028000 不一致，按既有行为保留）
   if (codeLen(message) > 2_048_000) throw new AppError(Code.FORM_MESSAGE_TOO_LONG, t('write.contentTooLong'));
+
+  // 外链图片转存：写时定稿前下载到 R2 并把 src 改写为站内地址（失败保留外链，不阻断编辑）
+  const localized = await localizeRemoteImages({ db: core.db, env: c.env }, { uid: viewer.uid, message });
+  message = localized.message;
+  const attachAids = [...(b.attachAids ?? []), ...localized.aids];
+
   const doctype = Number(b.doctype ?? 0);
   const fmt = postMessageFmt({ message, doctype, quotepid: 0 }, viewer.gid);
 
@@ -179,7 +186,11 @@ async function updatePost(c: Ctx): Promise<Response> {
   let movedForum = false;
   if (isfirst) {
     const newFid = Number(b.fid ?? fid);
-    const subject = b.subject !== undefined ? b.subject.toString() : thread.subject;
+    // 标题非空口径与创建统一（write.subjectRequired）；未传则保持原值
+    const subject = b.subject !== undefined ? b.subject.toString().trim() : thread.subject;
+    if (b.subject !== undefined && !subject) {
+      throw new AppError(Code.VALIDATION_ERROR, t('write.subjectRequired'));
+    }
     // 标题上限与创建口径统一（128，write.subjectTooLong）：历史 80 上限会使 81~128 字的存量标题一旦改动即无法保存
     if (subject !== thread.subject && codeLen(subject) > 128) {
       throw new AppError(Code.VALIDATION_ERROR, t('write.subjectTooLong'));
@@ -258,7 +269,7 @@ async function updatePost(c: Ctx): Promise<Response> {
 
   await core.db.batch(batchStmts);
   if (movedForum) await core.cache.del('forumlist');
-  await associateAttachments({ db: core.db, env: c.env, uid: viewer.uid, tid, pid, isfirst, aids: b.attachAids ?? [] });
+  await associateAttachments({ db: core.db, env: c.env, uid: viewer.uid, tid, pid, isfirst, aids: attachAids });
   await emit(core, 'post:updated', { pid, tid, uid: Number(post.uid) });
   await scheduleSeo(core, c, tid, 'gen');
   return ok(c, t('write.editDone'), { data: { pid, tid } });
@@ -319,7 +330,7 @@ async function deletePost(c: Ctx): Promise<Response> {
     for (const up of await upgradeGroupsByCredits(core, revokeAffectedUids(revokeEntries), ctx.grouplist)) {
       await emit(core, 'user:group-changed', { uid: up.uid, oldGid: up.oldGid, newGid: up.newGid });
     }
-    await patchRuntime(core.cache, { threads: -1 });
+    await patchRuntime(core, { threads: -1 });
     await core.cache.del('forumlist');
     await emit(core, 'post:deleted', { pid, tid, uid: postUid });
     await emit(core, 'thread:deleted', { tid, fid });
@@ -332,7 +343,7 @@ async function deletePost(c: Ctx): Promise<Response> {
   if (purge) {
     const attachKeys = await attachKeysByPid(core.db, pid);
     await core.db.batch(purge.stmts);
-    await patchRuntime(core.cache, { posts: -1 });
+    await patchRuntime(core, { posts: -1 });
     purgeR2Objects(c.env, await getExecCtx(c), attachKeys);
     // 积分回扣（非首帖扣作者 post_*）→ 按新经验重算等级组
     await revokeForPostDelete(core, [{ uid: postUid, isfirst: 0, pid }]);
